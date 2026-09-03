@@ -84,8 +84,8 @@ class SessionService:
         return ResolvedSession(raw_token=None, record=record, is_new=False)
 
     async def reserve_document(self, session_key: str, size: int) -> SessionRecord:
-        if size < 0:
-            raise AppError("invalid_document_size", 400, "Document size cannot be negative.", False)
+        if size <= 0:
+            raise AppError("invalid_document_size", 400, "Document size must be positive.", False)
 
         def reserve(record: SessionRecord, _: datetime) -> SessionRecord:
             if record.document_count >= self._settings.max_documents:
@@ -106,8 +106,8 @@ class SessionService:
         return await self._update(session_key, reserve)
 
     async def release_document(self, session_key: str, size: int) -> SessionRecord:
-        if size < 0:
-            raise AppError("invalid_document_size", 400, "Document size cannot be negative.", False)
+        if size <= 0:
+            raise AppError("invalid_document_size", 400, "Document size must be positive.", False)
 
         def release(record: SessionRecord, _: datetime) -> SessionRecord:
             if record.document_count == 0 or size > record.total_bytes:

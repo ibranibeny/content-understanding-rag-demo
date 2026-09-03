@@ -38,6 +38,7 @@ def test_first_call_sets_cookie_and_returns_only_public_quota_dto() -> None:
     response = client.get("/api/session")
 
     assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
     assert response.json() == {
         "expiresAt": "2026-09-04T10:00:00Z",
         "documentsUsed": 0,
@@ -101,6 +102,7 @@ def test_repeat_call_reuses_cookie_without_setting_it_again() -> None:
     second = client.get("/api/session")
 
     assert first.status_code == second.status_code == 200
+    assert "no-store" in second.headers["cache-control"]
     assert second.json() == first.json()
     assert "set-cookie" not in second.headers
 

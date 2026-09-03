@@ -188,6 +188,33 @@ async def test_document_bytes_accept_exact_limit_and_reject_one_more() -> None:
     assert caught.value.code == "storage_quota_exceeded"
 
 
+@pytest.mark.parametrize("size", [0, -1])
+@pytest.mark.parametrize("operation", ["reserve", "release"])
+async def test_document_operations_reject_nonpositive_size_without_mutation(
+    size: int, operation: str
+) -> None:
+    service, repository, _ = make_service()
+    issued = await service.issue()
+    if operation == "release":
+        await service.reserve_document(issued.record.session_key, 100)
+    before = await repository.get(issued.record.session_key)
+    assert before is not None
+
+    with pytest.raises(AppError) as caught:
+        if operation == "reserve":
+            await service.reserve_document(issued.record.session_key, size)
+        else:
+            await service.release_document(issued.record.session_key, size)
+
+    assert caught.value.code == "invalid_document_size"
+    assert caught.value.status_code == 400
+    assert not caught.value.retryable
+    after = await repository.get(issued.record.session_key)
+    assert after is not None
+    assert after[0].document_count == before[0].document_count
+    assert after[0].total_bytes == before[0].total_bytes
+
+
 async def test_release_document_is_strict_and_never_underflows() -> None:
     service, _, _ = make_service()
     issued = await service.issue()
