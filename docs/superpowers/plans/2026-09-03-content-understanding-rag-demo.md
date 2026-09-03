@@ -783,7 +783,7 @@ filtered while retaining all supported properties.
 - Create: `backend/tests/services/test_content_understanding.py`
 - Create: `backend/tests/test_analyzer_definitions.py`
 
-- [ ] **Step 1: Write analyzer schema tests**
+- [x] **Step 1: Write analyzer schema tests**
 
 ```python
 EXPECTED = {
@@ -803,19 +803,19 @@ def test_router_has_four_explicit_category_routes() -> None:
 
 Also validate that each analyzer extends `prebuilt-document`, enables Markdown content, defines every approved field exactly once, and uses no undeclared category.
 
-- [ ] **Step 2: Create the four exact schemas and router**
+- [x] **Step 2: Create the four exact schemas and router**
 
 Use GA API `2025-11-01`. Set `baseAnalyzerId` to `prebuilt-document`; set `returnDetails` and source/confidence only where the field is shown as evidence. Router categories use concise descriptions and explicit `analyzerId` targets. Set segmentation false because each upload is one logical document.
 
-- [ ] **Step 3: Write failing token-auth adapter tests**
+- [x] **Step 3: Write failing token-auth adapter tests**
 
 Test `POST /contentunderstanding/analyzers/{router}:analyze`, polling the exact `Operation-Location`, and `DELETE /contentunderstanding/analyzerResults/{id}`. Assert `Authorization: Bearer` is present and `Ocp-Apim-Subscription-Key` is absent.
 
-- [ ] **Step 4: Implement the adapter**
+- [x] **Step 4: Implement the adapter**
 
 Use `azure.identity.aio.DefaultAzureCredential` to obtain the `https://cognitiveservices.azure.com/.default` token and `httpx.AsyncClient`. Persist `resultId` immediately from `Operation-Location`. Treat `408`, `409` while busy, `429`, and `5xx` as transient; treat malformed results and `4xx` authorization/configuration errors as terminal. Return normalized Markdown, structured fields, category, source locators, token counts, and page count.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cd backend && uv run pytest tests/test_analyzer_definitions.py tests/services/test_content_understanding.py -q`
 
