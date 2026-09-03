@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from time import monotonic
 from typing import Any, Literal, Protocol, Self
 from urllib.parse import urlsplit
@@ -49,6 +49,11 @@ class RetrievalEvent(_Event):
 class TokenEvent(_Event):
     type: Literal["token"] = "token"
     text: str
+
+
+class ChatUsage(_Event):
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
 
 
 class CitationEvent(_Event):
@@ -114,7 +119,7 @@ class FoundryGPT5Client:
         if self._owns_credential:
             await self._credential.close()
 
-    async def stream(self, instructions: str, input_text: str) -> AsyncIterator[str]:
+    async def stream(self, instructions: str, input_text: str) -> AsyncIterator[str | ChatUsage]:
         token = await self._credential.get_token(TOKEN_SCOPE)
         request = self._http.build_request(
             "POST",
@@ -147,11 +152,23 @@ class FoundryGPT5Client:
                 event_type = event.get("type")
                 if event_type == "response.output_text.delta" and isinstance(event.get("delta"), str):
                     yield event["delta"]
+                elif event_type == "response.completed":
+                    response_data = event.get("response")
+                    usage = response_data.get("usage") if isinstance(response_data, Mapping) else None
+                    yield ChatUsage(
+                        input_tokens=self._token_count(usage, "input_tokens"),
+                        output_tokens=self._token_count(usage, "output_tokens"),
+                    )
                 elif event_type == "error":
                     raise RuntimeError("model_stream_failed")
         finally:
             if response is not None:
                 await response.aclose()
+
+    @staticmethod
+    def _token_count(usage: object, key: str) -> int:
+        value = usage.get(key) if isinstance(usage, Mapping) else None
+        return value if type(value) is int and value >= 0 else 0
 
 
 class RagService:
@@ -210,11 +227,15 @@ class RagService:
             return
 
         answer_parts: list[str] = []
-        async for text in self._model.stream(
+        usage = ChatUsage()
+        async for stream_item in self._model.stream(
             GROUNDING_INSTRUCTIONS, self._model_input(question, evidence)
         ):
-            answer_parts.append(text)
-            yield TokenEvent(text=text)
+            if isinstance(stream_item, ChatUsage):
+                usage = stream_item
+                continue
+            answer_parts.append(stream_item)
+            yield TokenEvent(text=stream_item)
         answer = "".join(answer_parts)
         cited_ids = set(CITATION_PATTERN.findall(answer))
         for item in evidence:
@@ -227,7 +248,11 @@ class RagService:
                         source_locator=item.source_locator,
                     )
                 )
-        yield DoneEvent(totalLatencyMs=int((monotonic() - started) * 1000))
+        yield DoneEvent(
+            inputTokens=usage.input_tokens,
+            outputTokens=usage.output_tokens,
+            totalLatencyMs=int((monotonic() - started) * 1000),
+        )
 
     @staticmethod
     def _source(item: RetrievedEvidence) -> RetrievalSource:

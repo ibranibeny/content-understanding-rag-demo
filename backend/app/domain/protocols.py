@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import JsonValue
@@ -17,6 +19,9 @@ from app.domain.models import (
     SessionRecord,
     VersionedDocument,
 )
+
+if TYPE_CHECKING:
+    from app.services.rag_service import ChatUsage
 
 
 @runtime_checkable
@@ -129,7 +134,7 @@ class BlobStore(UploadBlobStore, Protocol):
 
     def acquire_document_lease(
         self, session_key: str, document_id: UUID
-    ) -> "DocumentLeaseContext": ...
+    ) -> DocumentLeaseContext: ...
 
     async def delete_document_artifacts(self, session_key: str, document_id: UUID) -> None: ...
 
@@ -178,7 +183,7 @@ class ChunkSearch(Protocol):
 
 
 class ChatModel(Protocol):
-    def stream(self, instructions: str, input_text: str) -> AsyncIterator[str]: ...
+    def stream(self, instructions: str, input_text: str) -> AsyncIterator[str | ChatUsage]: ...
 
 
 class ReadinessCheck(Protocol):

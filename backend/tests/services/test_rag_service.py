@@ -9,7 +9,7 @@ import httpx
 
 from app.domain.models import DocumentRecord, DocumentState, RetrievedEvidence
 from app.repositories.memory_repository import MemoryDocumentRepository
-from app.services.rag_service import FoundryGPT5Client, RagService
+from app.services.rag_service import ChatUsage, FoundryGPT5Client, RagService
 
 NOW = datetime(2026, 9, 3, 10, 0, tzinfo=UTC)
 SESSION = "a" * 64
@@ -59,6 +59,13 @@ class Model:
 
     async def aclose(self) -> None:
         self.closed += 1
+
+
+class UsageModel(Model):
+    async def stream(self, instructions: str, input_text: str) -> AsyncIterator[str | ChatUsage]:
+        self.prompts.append((instructions, input_text))
+        yield self.text
+        yield ChatUsage(input_tokens=37, output_tokens=11)
 
 
 def document(
@@ -169,6 +176,19 @@ async def test_no_evidence_returns_explicit_insufficient_answer_without_model_ca
     assert model.prompts == []
 
 
+async def test_completion_usage_is_reported_in_done_event() -> None:
+    repository = MemoryDocumentRepository()
+    await repository.create(document(DOC_A))
+    model = UsageModel()
+    service = RagService(repository, Embeddings(), Search([evidence(DOC_A)]), model, Clock())
+
+    events = await collect(service)
+
+    assert events[-1].type == "done"
+    assert events[-1].input_tokens == 37
+    assert events[-1].output_tokens == 11
+
+
 class Credential:
     def __init__(self) -> None:
         self.scopes: list[str] = []
@@ -196,8 +216,12 @@ async def test_gpt5_responses_stream_uses_entra_bearer_and_exact_deployment() ->
             headers={"content-type": "text/event-stream"},
             text=(
                 'data: {"type":"response.output_text.delta","delta":"Hello"}\n\n'
-                'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,'
-                '"output_tokens":1}}}\n\n'
+                'data: {"type":"response.completed","sequence_number":9,"response":{'
+                '"id":"resp_123","object":"response","created_at":1788429600,'
+                '"status":"completed","model":"gpt-5","output":[],"usage":{'
+                '"input_tokens":3,"input_tokens_details":{"cached_tokens":0},'
+                '"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},'
+                '"total_tokens":4}}}\n\n'
                 'data: [DONE]\n\n'
             ),
         )
@@ -208,8 +232,33 @@ async def test_gpt5_responses_stream_uses_entra_bearer_and_exact_deployment() ->
         credential=credential,
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    assert [part async for part in client.stream("Ground only.", "Question")] == ["Hello"]
+    assert [part async for part in client.stream("Ground only.", "Question")] == [
+        "Hello",
+        ChatUsage(input_tokens=3, output_tokens=1),
+    ]
     assert credential.scopes == ["https://ai.azure.com/.default"]
     assert requests[0].url == "https://demo.openai.azure.com/openai/v1/responses"
     assert requests[0].headers["authorization"] == "Bearer entra-token"
     assert "api-key" not in requests[0].headers
+
+
+async def test_gpt5_responses_stream_defaults_missing_usage_to_zero() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"type":"response.completed","sequence_number":1,'
+                '"response":{"id":"resp_123","status":"completed"}}\n\n'
+                'data: [DONE]\n\n'
+            ),
+        )
+
+    client = FoundryGPT5Client(
+        "https://demo.openai.azure.com",
+        credential=Credential(),
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    assert [part async for part in client.stream("Ground only.", "Question")] == [ChatUsage()]
