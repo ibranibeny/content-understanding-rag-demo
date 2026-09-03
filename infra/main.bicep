@@ -227,7 +227,6 @@ module acr 'br/public:avm/res/container-registry/registry:0.13.0' = {
     tags: commonTags
     acrSku: 'Basic'
     acrAdminUserEnabled: false
-    publicNetworkAccess: 'Enabled'
     roleAssignments: [
       {
         roleDefinitionIdOrName: roles.acrPull
