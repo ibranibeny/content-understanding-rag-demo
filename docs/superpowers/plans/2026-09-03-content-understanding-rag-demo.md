@@ -1,5 +1,7 @@
 # Content Understanding Meets GitHub Copilot Implementation Plan
 
+> **MVP scope update (2026-09-03):** The user requested simplification. Completion now prioritizes the functional workshop path: upload → Content Understanding → chunk/embed → Azure AI Search → GPT-5 RAG → Technical Console → Bicep/Container Apps → GitHub CI/deploy. Advanced alerts, elaborate candidate traffic orchestration, exhaustive format matrices, speculative hardening, and nonessential abstractions are deferred. Existing durable code is retained, but subsequent reviews block only concrete scenario or deployment failures.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build, test, publish, and deploy a public Technical Console that turns mixed business documents into Content Understanding extractions and GPT-5 grounded answers.
@@ -935,7 +937,7 @@ git commit -m "feat: add vector indexing and hybrid retrieval"
 - Create: `backend/tests/services/test_ingestion_service.py`
 - Create: `backend/tests/test_worker.py`
 
-- [ ] **Step 1: Write failing happy-path and resumption tests**
+- [x] **Step 1: Write failing happy-path and resumption tests**
 
 ```python
 async def test_ingestion_reaches_ready_only_after_remote_result_delete() -> None:
@@ -955,25 +957,25 @@ async def test_redelivery_resumes_stored_result_instead_of_reanalyzing() -> None
     assert h.content_understanding.get_calls >= 1
 ```
 
-- [ ] **Step 2: Write cleanup-queue and tombstone tests**
+- [x] **Step 2: Write cleanup-queue and tombstone tests**
 
 Test that a failed result delete stores `result_cleanup_pending`, enqueues exactly one cleanup message, never analyzes again, retries indefinitely with increasing visibility delay, and resumes at `chunking` only after a `204`. Test tombstones before and immediately after lease acquisition and during renewal.
 
-- [ ] **Step 3: Implement the ingestion state machine**
+- [x] **Step 3: Implement the ingestion state machine**
 
 Acquire the control lease, use ETag transitions, save remote result ID before polling, persist normalized output, delete remote result, chunk/embed/upsert, and mark ready. Every retry is idempotent. Include `release_sha` in processing metadata.
 
-- [ ] **Step 4: Implement two queue pumps**
+- [x] **Step 4: Implement two queue pumps**
 
 One process polls `ingestion` and `cu-result-cleanup` concurrently with bounded concurrency. Renew queue visibility and blob lease in background tasks. Delete queue messages only after durable state transition. Normal failures have five attempts then poison; remote-result deletion remains on its dedicated durable queue and alerts after five attempts without stopping retries.
 
-- [ ] **Step 5: Verify worker behavior**
+- [x] **Step 5: Verify worker behavior**
 
 Run: `cd backend && uv run pytest tests/services/test_ingestion_service.py tests/test_worker.py -q`
 
 Expected: happy path, all resume points, `429` Retry-After, poison behavior, cleanup-only scale scenario, lease loss, tombstone, and release-SHA tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app backend/tests
