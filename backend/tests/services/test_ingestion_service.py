@@ -177,6 +177,28 @@ async def test_chunking_resume_reads_normalized_blob_and_never_analyzes() -> Non
     assert (await repo.get(SESSION, DOCUMENT)).value.title == "Saved"  # type: ignore[union-attr]
 
 
+async def test_redelivery_after_remote_delete_retries_delete_without_polling() -> None:
+    normalized = (b'{"category":"invoice","markdown":"# Saved\\nBody","fields":{"title":"Saved"},'
+                  b'"sourceLocators":{},"pageCount":1,"tokenCounts":{}}')
+    path = f"derived/{SESSION}/{DOCUMENT}/normalized.json"
+    blobs = Blobs()
+    blobs.values[path] = normalized
+    service, repo, _, cu, _ = await harness(record(
+        state=DocumentState.EXTRACTED,
+        content_result_id="result-1",
+        content_operation_url="https://cu/op/1",
+        markdown_blob_name=path,
+    ), blobs)
+
+    await service.process(message())
+
+    assert cu.get_calls == 0
+    assert cu.deleted_result_ids == ["result-1"]
+    stored = await repo.get(SESSION, DOCUMENT)
+    assert stored is not None and stored.value.state is DocumentState.READY
+    assert stored.value.content_result_id is None
+
+
 async def test_transient_delete_persists_cleanup_outbox_and_stops_before_chunking() -> None:
     service, repo, _, cu, queue = await harness()
     cu.delete_error = ContentUnderstandingError("unavailable", retryable=True, retry_after=7)
@@ -214,6 +236,19 @@ async def test_expired_document_and_duplicate_ready_delivery_are_noops() -> None
                                                      token_count=4))
     await service.process(message())
     assert cu.begin_calls == 0 and repo.states == []
+
+
+async def test_failed_document_redelivery_is_terminal_and_does_not_analyze() -> None:
+    service, repo, _, cu, _ = await harness(record(
+        state=DocumentState.FAILED,
+        failure_code="content_understanding_failed",
+        retry_count=5,
+    ))
+
+    await service.process(message())
+
+    assert cu.begin_calls == cu.get_calls == 0
+    assert repo.states == []
 
 
 async def test_poll_honors_retry_after_and_is_bounded() -> None:

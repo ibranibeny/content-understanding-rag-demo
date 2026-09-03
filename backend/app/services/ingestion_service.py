@@ -93,6 +93,7 @@ class IngestionService:
                 DocumentState.RESULT_CLEANUP_PENDING,
                 DocumentState.DELETING,
                 DocumentState.DELETED,
+                DocumentState.FAILED,
             }
             and document.tombstoned_at is None
             and document.expires_at > self._clock.now()
@@ -121,6 +122,10 @@ class IngestionService:
             document.content_result_id is None and document.markdown_blob_name is not None
         ):
             return self._decode_normalized(await self._blobs.read_derived(normalized_path))
+
+        if document.markdown_blob_name is not None and document.content_result_id is not None:
+            normalized = self._decode_normalized(await self._blobs.read_derived(normalized_path))
+            return await self._delete_result_or_defer(current, message, lease, normalized)
 
         if document.content_result_id is None or document.content_operation_url is None:
             current = await self._transition(current, DocumentState.ANALYZING)
@@ -152,6 +157,17 @@ class IngestionService:
         await self._blobs.write_derived(normalized_path, self._encode_normalized(normalized), "application/json")
         markdown_path = self._markdown_path(current.value)
         await self._blobs.write_derived(markdown_path, str(normalized["markdown"]).encode(), "text/markdown; charset=utf-8")
+        return await self._delete_result_or_defer(current, message, lease, normalized)
+
+    async def _delete_result_or_defer(
+        self,
+        current: VersionedDocument,
+        message: IngestionMessage,
+        lease: Any,
+        normalized: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        result_id = current.value.content_result_id
+        assert result_id is not None
         lease.ensure_valid()
         try:
             await self._content.delete_result(result_id)

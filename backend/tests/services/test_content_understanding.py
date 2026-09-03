@@ -190,6 +190,20 @@ async def test_delete_result_uses_exact_path_and_accepts_204() -> None:
     await http.aclose()
 
 
+async def test_delete_result_accepts_not_found_as_idempotent_success() -> None:
+    service, _, http = client(lambda request: httpx.Response(404))
+    await service.delete_result("result-1")
+    await http.aclose()
+
+
+async def test_poll_does_not_accept_not_found() -> None:
+    service, _, http = client(lambda request: httpx.Response(404))
+    with pytest.raises(ContentUnderstandingError) as caught:
+        await service.poll(OPERATION)
+    assert not caught.value.retryable
+    await http.aclose()
+
+
 async def test_create_analyzer_and_update_defaults_use_exact_methods() -> None:
     requests: list[httpx.Request] = []
 
@@ -261,7 +275,7 @@ async def test_network_timeout_is_retryable_without_leaking_url() -> None:
     await http.aclose()
 
 
-@pytest.mark.parametrize(("status", "retryable"), [(408, True), (409, True), (429, True), (500, True), (503, True), (400, False), (401, False), (403, False), (404, False)])
+@pytest.mark.parametrize(("status", "retryable"), [(408, True), (409, True), (429, True), (500, True), (503, True), (400, False), (401, False), (403, False)])
 async def test_http_errors_are_safely_classified(status: int, retryable: bool) -> None:
     service, _, http = client(lambda request: httpx.Response(status, headers={"Retry-After": "7"}, text="secret document response"))
     with pytest.raises(ContentUnderstandingError) as caught:

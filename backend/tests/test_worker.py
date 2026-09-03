@@ -7,7 +7,8 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from app.domain.models import ContentResultCleanupMessage, IngestionMessage
+from app.core.errors import ConcurrencyConflict
+from app.domain.models import ContentResultCleanupMessage, DocumentState, IngestionMessage
 from app.services.content_understanding import ContentUnderstandingError
 from app.worker import CleanupProcessor, QueuePump, parse_cleanup_message, parse_ingestion_message
 
@@ -57,6 +58,32 @@ class Queue:
         self.poison.append(content)
 
 
+class RotatingReceiptQueue(Queue):
+    def __init__(self, message) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(message)
+        self.receipt = message.pop_receipt
+        self.next_visible_on = None
+        self._version = 0
+
+    async def update_message(self, message, *, visibility_timeout: int):  # type: ignore[no-untyped-def]
+        assert message.pop_receipt == self.receipt
+        self.updates.append(visibility_timeout)
+        self._version += 1
+        self.receipt = f"receipt-{self._version}"
+        self.next_visible_on = f"visible-{self._version}"
+        return SimpleNamespace(
+            content=message.content,
+            dequeue_count=message.dequeue_count,
+            pop_receipt=self.receipt,
+            next_visible_on=self.next_visible_on,
+        )
+
+    async def delete_message(self, message) -> None:  # type: ignore[no-untyped-def]
+        assert message.pop_receipt == self.receipt
+        assert message.next_visible_on == self.next_visible_on
+        self.deleted += 1
+
+
 async def test_queue_pump_renews_visibility_and_deletes_only_after_success() -> None:
     queue = Queue(SimpleNamespace(content=ingestion().model_dump_json(by_alias=True), dequeue_count=1))
     started = asyncio.Event()
@@ -77,6 +104,59 @@ async def test_queue_pump_renews_visibility_and_deletes_only_after_success() -> 
     finish.set()
     await task
     assert queue.deleted == 1
+
+
+async def test_queue_pump_uses_latest_rotated_receipt_for_final_delete() -> None:
+    raw = SimpleNamespace(
+        content=ingestion().model_dump_json(by_alias=True),
+        dequeue_count=1,
+        pop_receipt="receipt-0",
+        next_visible_on=None,
+    )
+    queue = RotatingReceiptQueue(raw)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def handler(message: IngestionMessage) -> None:
+        del message
+        started.set()
+        await finish.wait()
+
+    task = asyncio.create_task(
+        QueuePump(queue, handler, parse_ingestion_message, renew_interval=0.01).handle(raw)
+    )
+    await started.wait()
+    await asyncio.sleep(0.03)
+    finish.set()
+    await task
+
+    assert queue.updates
+    assert queue.deleted == 1
+
+
+async def test_queue_pump_uses_latest_rotated_receipt_for_retry_update() -> None:
+    raw = SimpleNamespace(
+        content=ingestion().model_dump_json(by_alias=True),
+        dequeue_count=1,
+        pop_receipt="receipt-0",
+        next_visible_on=None,
+    )
+    queue = RotatingReceiptQueue(raw)
+    started = asyncio.Event()
+
+    async def handler(message: IngestionMessage) -> None:
+        del message
+        started.set()
+        await asyncio.sleep(0.03)
+        raise ContentUnderstandingError("unavailable", retryable=True)
+
+    await QueuePump(
+        queue, handler, parse_ingestion_message, renew_interval=0.01
+    ).handle(raw)
+
+    assert started.is_set()
+    assert len(queue.updates) >= 2
+    assert queue.deleted == 0
 
 
 async def test_normal_failure_attempt_five_marks_failed_and_sends_sanitized_poison() -> None:
@@ -124,6 +204,34 @@ class Documents:
         self.outbox = outbox
 
 
+class RacingDocuments(Documents):
+    def __init__(self, *, deletion_wins: bool) -> None:
+        super().__init__()
+        self.deletion_wins = deletion_wins
+        self.get_calls = 0
+        self.commit_calls = 0
+
+    async def get(self, session_key, document_id):  # type: ignore[no-untyped-def]
+        current = await super().get(session_key, document_id)
+        self.get_calls += 1
+        if self.deletion_wins and self.get_calls > 1:
+            assert current is not None
+            return SimpleNamespace(
+                value=current.value.model_copy(update={
+                    "state": DocumentState.DELETING,
+                    "tombstoned_at": NOW,
+                }),
+                etag='W/"2"',
+            )
+        return current
+
+    async def commit_document_with_outbox(self, document, etag, outbox):  # type: ignore[no-untyped-def]
+        self.commit_calls += 1
+        if self.commit_calls == 1:
+            raise ConcurrencyConflict
+        await super().commit_document_with_outbox(document, etag, outbox)
+
+
 class WorkQueue:
     def __init__(self) -> None:
         self.ingestion: list[IngestionMessage] = []
@@ -150,6 +258,26 @@ async def test_cleanup_consumer_only_deletes_then_requeues_chunking() -> None:
     await processor.process(cleanup())
     assert cu.calls == 1 and documents.cleared
     assert queue.ingestion[0].resume_stage == "chunking"
+
+
+async def test_cleanup_conflict_rereads_and_never_overwrites_deletion() -> None:
+    documents, queue, cu = RacingDocuments(deletion_wins=True), WorkQueue(), CU()
+    processor = CleanupProcessor(documents, cu, queue, lambda: NOW)
+
+    await processor.process(cleanup())
+
+    assert documents.commit_calls == 1
+    assert queue.ingestion == []
+
+
+async def test_cleanup_conflict_retries_with_latest_etag() -> None:
+    documents, queue, cu = RacingDocuments(deletion_wins=False), WorkQueue(), CU()
+    processor = CleanupProcessor(documents, cu, queue, lambda: NOW)
+
+    await processor.process(cleanup())
+
+    assert documents.commit_calls == 2
+    assert len(queue.ingestion) == 1
 
 
 async def test_cleanup_failure_never_poisons_and_uses_increasing_visibility_after_five() -> None:

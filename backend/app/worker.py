@@ -13,7 +13,7 @@ from azure.storage.queue.aio import QueueClient
 from pydantic import BaseModel
 
 from app.core.config import Settings
-from app.core.errors import TransientArtifactError
+from app.core.errors import ConcurrencyConflict, TransientArtifactError
 from app.domain.models import (
     ContentResultCleanupMessage,
     DocumentState,
@@ -91,23 +91,25 @@ class QueuePump[M: BaseModel]:
 
     async def handle(self, raw: QueueMessage) -> None:
         stopped = asyncio.Event()
-        renewal = asyncio.create_task(self._renew_visibility(raw, stopped))
+        operation_lock = asyncio.Lock()
+        renewal = asyncio.create_task(self._renew_visibility(raw, stopped, operation_lock))
         message: M | None = None
         try:
             message = self._parser(raw.content)
             await self._handler(message)
         except Exception as error:  # noqa: BLE001 - queue boundary must classify all failures
+            await self._stop_renewal(stopped, renewal)
             attempts = int(raw.dequeue_count or 1)
             code, retryable, retry_after = _safe_failure(error)
             if self._retry_forever:
                 delay = int(retry_delay(attempts, retry_after, cap=3600))
-                await self._queue.update_message(raw, visibility_timeout=max(1, delay))
+                await self._update_message(raw, max(1, delay), operation_lock)
                 if attempts >= MAX_ATTEMPTS and self._alert is not None:
                     self._alert(attempts)
                 return
             if retryable and attempts < MAX_ATTEMPTS:
                 delay = int(retry_delay(attempts, retry_after))
-                await self._queue.update_message(raw, visibility_timeout=max(1, delay))
+                await self._update_message(raw, max(1, delay), operation_lock)
                 return
             if self._mark_failed is not None and message is not None:
                 await self._mark_failed(message, code, retryable, attempts)
@@ -120,22 +122,42 @@ class QueuePump[M: BaseModel]:
                     "attempts": attempts,
                 }, separators=(",", ":"))
                 await self._poison.send_message(envelope)
-            await self._queue.delete_message(raw)
+            async with operation_lock:
+                await self._queue.delete_message(raw)
             return
         finally:
-            stopped.set()
-            renewal.cancel()
-            with suppress(asyncio.CancelledError):
-                await renewal
-        await self._queue.delete_message(raw)
+            await self._stop_renewal(stopped, renewal)
+        async with operation_lock:
+            await self._queue.delete_message(raw)
 
-    async def _renew_visibility(self, raw: QueueMessage, stopped: asyncio.Event) -> None:
+    async def _renew_visibility(
+        self, raw: QueueMessage, stopped: asyncio.Event, operation_lock: asyncio.Lock
+    ) -> None:
         while True:
             try:
                 await asyncio.wait_for(stopped.wait(), timeout=self._renew_interval)
                 return
             except TimeoutError:
-                await self._queue.update_message(raw, visibility_timeout=self._visibility_timeout)
+                await self._update_message(raw, self._visibility_timeout, operation_lock)
+
+    async def _update_message(
+        self, raw: QueueMessage, visibility_timeout: int, operation_lock: asyncio.Lock
+    ) -> None:
+        async with operation_lock:
+            updated = await self._queue.update_message(
+                raw, visibility_timeout=visibility_timeout
+            )
+            if updated is not None:
+                for attribute in ("pop_receipt", "next_visible_on"):
+                    value = getattr(updated, attribute, None)
+                    if value is not None:
+                        setattr(raw, attribute, value)
+
+    @staticmethod
+    async def _stop_renewal(stopped: asyncio.Event, renewal: asyncio.Task[None]) -> None:
+        stopped.set()
+        with suppress(asyncio.CancelledError):
+            await renewal
 
 
 class CleanupProcessor:
@@ -147,30 +169,49 @@ class CleanupProcessor:
         self._now = now
 
     async def process(self, message: ContentResultCleanupMessage) -> None:
-        current = await self._documents.get(message.session_key, message.document_id)
-        if current is None or current.value.content_result_id != message.result_id:
+        for attempt in range(3):
+            current = await self._documents.get(message.session_key, message.document_id)
+            if current is None or self._deletion_fenced(current.value):
+                return
+            if (
+                current.value.state is not DocumentState.RESULT_CLEANUP_PENDING
+                or current.value.content_result_id != message.result_id
+            ):
+                return
+            await self._content.delete_result(message.result_id)
+            document = current.value.model_copy(update={
+                "state": DocumentState.CHUNKING,
+                "content_result_id": None,
+                "content_operation_url": None,
+                "updated_at": self._now(),
+            })
+            resume = IngestionMessage(
+                version=1, session_key=message.session_key, document_id=message.document_id,
+                blob_name=current.value.blob_name or "", correlation_id=message.correlation_id,
+                enqueued_at=self._now(), resume_stage="chunking",
+            )
+            outbox = OutboxRecord(
+                outbox_id=f"ingest:{message.document_id}:chunking:{message.result_id}",
+                session_key=message.session_key,
+                kind="ingestion",
+                payload=resume,
+                created_at=self._now(),
+            )
+            try:
+                await self._documents.commit_document_with_outbox(document, current.etag, outbox)
+            except ConcurrencyConflict:
+                if attempt == 2:
+                    raise
+                continue
+            await self._queue.enqueue_ingestion(resume)
             return
-        await self._content.delete_result(message.result_id)
-        document = current.value.model_copy(update={
-            "state": DocumentState.CHUNKING,
-            "content_result_id": None,
-            "content_operation_url": None,
-            "updated_at": self._now(),
-        })
-        resume = IngestionMessage(
-            version=1, session_key=message.session_key, document_id=message.document_id,
-            blob_name=current.value.blob_name or "", correlation_id=message.correlation_id,
-            enqueued_at=self._now(), resume_stage="chunking",
+
+    def _deletion_fenced(self, document: Any) -> bool:
+        return (
+            document.state in {DocumentState.DELETING, DocumentState.DELETED}
+            or document.tombstoned_at is not None
+            or document.expires_at <= self._now()
         )
-        outbox = OutboxRecord(
-            outbox_id=f"ingest:{message.document_id}:chunking:{message.result_id}",
-            session_key=message.session_key,
-            kind="ingestion",
-            payload=resume,
-            created_at=self._now(),
-        )
-        await self._documents.commit_document_with_outbox(document, current.etag, outbox)
-        await self._queue.enqueue_ingestion(resume)
 
 
 class SystemClock:

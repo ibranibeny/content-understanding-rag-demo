@@ -189,7 +189,7 @@ class ContentUnderstandingClient:
             "DELETE",
             f"/contentunderstanding/analyzerResults/{quote(self._identifier(result_id), safe='')}",
             params={"api-version": API_VERSION},
-            expected={204},
+            expected={204, 404},
         )
 
     async def _request(
