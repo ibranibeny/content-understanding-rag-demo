@@ -240,7 +240,7 @@ def test_keda_queue_rules_use_managed_identity(template: dict) -> None:
     queue_rules = [rule for rule in rules if "azureQueue" in rule]
     assert len(queue_rules) == 2
     for rule in queue_rules:
-        assert "identity" in rule
+        assert "identity" in rule["azureQueue"]
         assert "accountName" in rule["azureQueue"]
         assert "auth" not in rule["azureQueue"]
 
