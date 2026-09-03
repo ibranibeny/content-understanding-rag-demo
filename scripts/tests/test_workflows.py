@@ -102,9 +102,58 @@ def test_deploy_authenticates_without_secrets() -> None:
     assert "secrets." not in text, "deploy must be OIDC-only and reference no secrets"
 
 
-def test_deploy_delegates_to_existing_deploy_script() -> None:
+def test_deploy_builds_and_pushes_images_on_github() -> None:
     text = _read("deploy.yml")
-    assert "scripts/deploy.ps1" in text, "deploy must call the existing deploy.ps1"
+    assert "docker build --pull" in text, "deploy must build release images on the GitHub runner"
+    assert "docker push" in text, "deploy must push release images to ACR"
+    assert "az acr login" in text, "deploy must authenticate Docker to ACR"
+    assert "/backend:${GITHUB_SHA}" in text, "backend image must be tagged with the commit SHA"
+    assert "/frontend:${GITHUB_SHA}" in text, "frontend image must be tagged with the commit SHA"
+
+
+def test_deploy_does_not_provision_or_use_acr_tasks() -> None:
+    text = _read("deploy.yml")
+    assert "az acr build" not in text, "release images must not be built with ACR Tasks"
+    assert "azd provision" not in text, "deploy must not provision infrastructure"
+    assert "azd " not in text, "deploy must not use azd"
+    assert "scripts/deploy.ps1" not in text, "deploy must not delegate to deploy.ps1"
+
+
+def test_deploy_updates_container_apps_and_cleanup_job() -> None:
+    text = _read("deploy.yml")
+    assert text.count("az containerapp update") >= 3, "API, worker, and frontend apps must be updated"
+    assert "az containerapp job update" in text, "the cleanup job image must be updated"
+    assert "API_UPSTREAM=${API_URL}" in text, "frontend proxy must target the API URL"
+
+
+def test_deploy_maps_production_variables_into_job_env() -> None:
+    text = _read("deploy.yml")
+    required = (
+        "AZURE_RESOURCE_GROUP",
+        "AZURE_CONTAINER_REGISTRY_NAME",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT",
+        "API_CONTAINER_APP_NAME",
+        "WORKER_CONTAINER_APP_NAME",
+        "CLEANUP_JOB_NAME",
+        "FRONTEND_CONTAINER_APP_NAME",
+        "API_URL",
+        "FRONTEND_URL",
+        "FOUNDRY_ENDPOINT",
+        "SEARCH_ENDPOINT",
+        "SEARCH_INDEX_NAME",
+        "CHAT_DEPLOYMENT",
+        "EMBEDDING_DEPLOYMENT",
+        "ANALYZER_ROUTER_ID",
+    )
+    for name in required:
+        assert f"{name}: ${{{{ vars.{name} }}}}" in text, f"deploy job env missing {name}"
+
+
+def test_deploy_runs_bootstrap_and_smoke_via_backend_uv() -> None:
+    text = _read("deploy.yml")
+    assert "uv sync" in text, "deploy must sync the backend (enterprise index from pyproject)"
+    assert "scripts/bootstrap-data-plane.py" in text, "deploy must bootstrap the data plane"
+    assert "scripts/smoke_test.py" in text, "deploy must run the deployed smoke test"
 
 
 # --- Supporting delivery configuration ---------------------------------------
@@ -115,3 +164,18 @@ def test_copilot_instructions_and_configure_script_exist() -> None:
     text = configure.read_text(encoding="utf-8")
     assert "automatic_copilot_code_review_enabled" in text, "configure script must enable Copilot review"
     assert "required_status_checks" in text, "configure script must require status checks (CodeQL blocking)"
+
+
+def test_configure_script_publishes_deploy_variables() -> None:
+    configure = REPO_ROOT / "scripts" / "configure-github.ps1"
+    text = configure.read_text(encoding="utf-8")
+    for name in (
+        "AZURE_CONTAINER_REGISTRY_NAME",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT",
+        "API_CONTAINER_APP_NAME",
+        "WORKER_CONTAINER_APP_NAME",
+        "CLEANUP_JOB_NAME",
+        "FRONTEND_CONTAINER_APP_NAME",
+        "ANALYZER_ROUTER_ID",
+    ):
+        assert name in text, f"configure script must publish {name}"

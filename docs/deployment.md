@@ -1,6 +1,8 @@
 # Deploy and operate the MVP
 
-This how-to deploys the workshop application to Azure. It uses Bicep for resource creation, ACR Tasks for image builds, immutable image digests for rollout, and Microsoft Entra authentication.
+This how-to deploys the workshop application to Azure. Infrastructure is created once from validated Bicep. Release container images are built **only on GitHub-hosted runners** by the `Deploy` workflow ([.github/workflows/deploy.yml](../.github/workflows/deploy.yml)): a push to `main` builds both images, pushes immutable SHA-tagged images to ACR, updates the Container Apps, then bootstraps the data plane and runs the smoke test. Authentication is Microsoft Entra (OIDC) end to end.
+
+> Release images are never built from a developer machine and never with ACR Tasks. Any local `docker` or `az acr build` images produced while troubleshooting are non-release and safe to ignore; do not delete shared resources to "clean them up".
 
 ## Before deployment
 
@@ -16,7 +18,9 @@ Inspect the deployment without contacting Azure:
 ./scripts/deploy.ps1 -WhatIf
 ```
 
-## Deploy
+## Provision infrastructure (run once, locally)
+
+Provision the resource group from the validated Bicep. Passing the GitHub `owner`/`repository` creates the deployment identity and its `production` federated credential used by the release workflow:
 
 ```powershell
 az login
@@ -32,7 +36,17 @@ Optional switches:
 - `-SkipSmoke` skips the deployed smoke test.
 - `-SampleFile <path>` replaces the default synthetic PDF generated in memory by `scripts/smoke_test.py`. Never use confidential data.
 
-The default sequence is Bicep provision, backend/frontend ACR builds, immutable-digest rollout, frontend API-upstream configuration, data-plane bootstrap, and smoke validation. It is a simple MVP rollout, not candidate traffic orchestration. Live ACR build/deployment proof is deferred to Task 19.
+`deploy.ps1` provisions with Bicep and can also run a **local, non-release** end-to-end rollout (it builds with ACR Tasks, so no local Docker is required). Use it for the one-time provision and for troubleshooting only — it is not the release path.
+
+## Release (GitHub only)
+
+Release images are built and shipped by the `Deploy` workflow, never locally:
+
+1. Push the feature branch and open a pull request.
+2. GitHub Copilot code review plus the required CI and CodeQL checks run and must pass.
+3. Merge to `main`. The push to `main` triggers `Deploy`, which on a GitHub-hosted runner logs in with OIDC, builds the backend and frontend images, pushes immutable SHA-tagged images to ACR, updates the API/worker/cleanup/frontend Container Apps, bootstraps the data plane, and runs the smoke test.
+
+Publish the non-secret production variables the workflow reads once with `./scripts/configure-github.ps1` (it also creates the `production` environment and the branch ruleset). The rollout is a simple MVP revision update, not candidate traffic orchestration.
 
 ## Verify
 

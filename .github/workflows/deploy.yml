@@ -1,12 +1,17 @@
 name: Deploy
 
-# Production deployment. Authenticates to Azure with OIDC (federated credential) using the
-# non-secret client/tenant/subscription IDs stored as production environment variables, then
-# delegates the full rollout to the existing scripts/deploy.ps1 (azd provision, ACR build,
-# immutable-digest rollout, data-plane bootstrap, smoke test). No secrets are used.
+# Production release. Runs only after a pull request has passed the branch-ruleset checks
+# (backend, frontend, bicep, and both CodeQL analyses) and been merged to main, so this job
+# needs no explicit `needs:` — the ruleset is what guarantees the checks ran before the merge
+# commit that triggers this workflow. Infrastructure is provisioned separately (validated Bicep,
+# run once); this workflow never provisions and never runs ACR Tasks.
 #
-# The federated identity referenced by AZURE_CLIENT_ID must already hold the data-plane roles
-# granted by the Bicep deployment; deploy.ps1 resolves the acting principal at run time.
+# The GitHub-hosted runner authenticates to Azure with OIDC (federated credential) using the
+# non-secret client/tenant/subscription IDs stored as production environment variables, builds
+# both container images on the runner (Docker is preinstalled), pushes immutable SHA-tagged
+# images to ACR, updates the Container Apps, then runs the data-plane bootstrap and smoke test.
+# Release images are built ONLY here — never from a developer machine and never with ACR Tasks.
+# No secrets are used: every value is a non-secret production variable.
 
 on:
   push:
@@ -31,6 +36,24 @@ jobs:
     name: deploy
     runs-on: ubuntu-latest
     environment: production
+    # Non-secret production variables published by scripts/configure-github.ps1 from the
+    # validated Bicep outputs. These name the resources the release build/deploy targets.
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_CONTAINER_REGISTRY_NAME: ${{ vars.AZURE_CONTAINER_REGISTRY_NAME }}
+      AZURE_CONTAINER_REGISTRY_ENDPOINT: ${{ vars.AZURE_CONTAINER_REGISTRY_ENDPOINT }}
+      API_CONTAINER_APP_NAME: ${{ vars.API_CONTAINER_APP_NAME }}
+      WORKER_CONTAINER_APP_NAME: ${{ vars.WORKER_CONTAINER_APP_NAME }}
+      CLEANUP_JOB_NAME: ${{ vars.CLEANUP_JOB_NAME }}
+      FRONTEND_CONTAINER_APP_NAME: ${{ vars.FRONTEND_CONTAINER_APP_NAME }}
+      API_URL: ${{ vars.API_URL }}
+      FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+      FOUNDRY_ENDPOINT: ${{ vars.FOUNDRY_ENDPOINT }}
+      SEARCH_ENDPOINT: ${{ vars.SEARCH_ENDPOINT }}
+      SEARCH_INDEX_NAME: ${{ vars.SEARCH_INDEX_NAME }}
+      CHAT_DEPLOYMENT: ${{ vars.CHAT_DEPLOYMENT }}
+      EMBEDDING_DEPLOYMENT: ${{ vars.EMBEDDING_DEPLOYMENT }}
+      ANALYZER_ROUTER_ID: ${{ vars.ANALYZER_ROUTER_ID }}
     steps:
       - uses: actions/checkout@v4
       - name: Azure login (OIDC, no secrets)
@@ -39,18 +62,43 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Install azd
-        uses: Azure/setup-azd@v2
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - name: Deploy with existing deploy.ps1
-        shell: pwsh
+      - name: Sync backend (enterprise index from backend/pyproject.toml)
+        working-directory: backend
+        run: uv sync
+      - name: Log in to ACR
+        run: az acr login --name "$AZURE_CONTAINER_REGISTRY_NAME"
+      - name: Build release images on the GitHub runner
         run: |
-          $deployArgs = @('-ReleaseSha', '${{ github.sha }}')
-          if ('${{ vars.AZURE_ENV_NAME }}')        { $deployArgs += @('-EnvironmentName', '${{ vars.AZURE_ENV_NAME }}') }
-          if ('${{ vars.AZURE_LOCATION }}')        { $deployArgs += @('-Location', '${{ vars.AZURE_LOCATION }}') }
-          if ('${{ vars.AZURE_FOUNDRY_LOCATION }}') { $deployArgs += @('-FoundryLocation', '${{ vars.AZURE_FOUNDRY_LOCATION }}') }
-          if ('${{ inputs.skipLiveModel }}' -eq 'true') { $deployArgs += '-SkipLiveModel' }
-          ./scripts/deploy.ps1 @deployArgs
+          set -euo pipefail
+          docker build --pull --tag "$AZURE_CONTAINER_REGISTRY_ENDPOINT/backend:${GITHUB_SHA}" ./backend
+          docker build --pull --tag "$AZURE_CONTAINER_REGISTRY_ENDPOINT/frontend:${GITHUB_SHA}" ./frontend
+      - name: Push release images to ACR
+        run: |
+          set -euo pipefail
+          docker push "$AZURE_CONTAINER_REGISTRY_ENDPOINT/backend:${GITHUB_SHA}"
+          docker push "$AZURE_CONTAINER_REGISTRY_ENDPOINT/frontend:${GITHUB_SHA}"
+      - name: Deploy images to Azure Container Apps
+        run: |
+          set -euo pipefail
+          backend="$AZURE_CONTAINER_REGISTRY_ENDPOINT/backend:${GITHUB_SHA}"
+          frontend="$AZURE_CONTAINER_REGISTRY_ENDPOINT/frontend:${GITHUB_SHA}"
+          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$API_CONTAINER_APP_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}"
+          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$WORKER_CONTAINER_APP_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}"
+          az containerapp job update -g "$AZURE_RESOURCE_GROUP" -n "$CLEANUP_JOB_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}"
+          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$FRONTEND_CONTAINER_APP_NAME" --image "$frontend" --set-env-vars "API_UPSTREAM=${API_URL}" "RELEASE_SHA=${GITHUB_SHA}"
+      - name: Bootstrap Content Understanding and AI Search
+        run: uv --project backend run python scripts/bootstrap-data-plane.py
+      - name: Smoke test
+        env:
+          SKIP_LIVE_MODEL: ${{ inputs.skipLiveModel }}
+        run: |
+          set -euo pipefail
+          args=(--api-base "$API_URL" --frontend-origin "$FRONTEND_URL")
+          if [ "${SKIP_LIVE_MODEL}" = "true" ]; then
+            args+=(--skip-live-model)
+          fi
+          uv --project backend run python scripts/smoke_test.py "${args[@]}"

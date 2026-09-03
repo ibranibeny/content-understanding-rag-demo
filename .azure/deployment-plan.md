@@ -20,6 +20,7 @@ Deploy the functional Content Understanding RAG workshop MVP.
 - Azure Developer CLI (`azd`)
 - Bicep only
 - Docker images for frontend and shared backend
+- Release images are built on GitHub-hosted runners and pushed to ACR (no local Docker build, no ACR Tasks for release); infrastructure is provisioned once from Bicep.
 
 ## Functional gate
 Upload a fixture, extract with Content Understanding, index it, ask a grounded question through GPT-5, verify a citation, then delete the fixture.
@@ -31,7 +32,7 @@ Managed Identity for runtime services, GitHub OIDC for CI/CD, no Azure API keys 
 - Pull requests run tests and CodeQL for Python and JavaScript/TypeScript; CodeQL is a required blocking check.
 - A branch ruleset automatically requests GitHub Copilot code review for new pull requests and new pushes.
 - Copilot review is advisory because GitHub records it as a comment review; tests and CodeQL remain the merge blockers.
-- Pushes to `main` build the frontend and backend images, push them to ACR, and deploy the Azure Container Apps revision through OIDC.
+- Pushes to `main` build the frontend and backend images **on GitHub-hosted runners** (no ACR Tasks), push them to ACR, and deploy the Azure Container Apps revision through OIDC.
 
 ## Implemented infrastructure (Task 15 — In Progress)
 
@@ -78,7 +79,9 @@ Container Apps (frontend/api/worker) + cleanup Job, and all role assignments.
 - Optional `deploymentPrincipalId`: same data-plane roles for local/CI bootstrap when supplied.
 - Optional GitHub deployment UAMI (created when `githubOwner`+`githubRepository` set): OIDC federated
   credential `repo:{owner}/{repository}:environment:production`; Contributor + RBAC Administrator on
-  the resource group; Content Understanding Owner on Foundry.
+  the resource group; AcrPush on ACR; Search Service Contributor + Search Index Data Contributor on
+  Search; Cognitive Services OpenAI User + Content Understanding Owner on Foundry (the roles the
+  GitHub runner needs to push images and bootstrap the data plane).
 
 **Images** — exactly two parameters (`frontendImage`, `backendImage`), both defaulting to the public
 `containerapps-helloworld` bootstrap image; the one `backendImage` is applied identically to API,
@@ -136,5 +139,5 @@ alerts module; consolidated into `main.bicep` rather than per-concern modules.
 - Backend quality gate — Ruff passed, strict mypy passed, 677 tests passed.
 - Frontend quality gate — lint, type-check, 7 tests, and production build passed.
 - `azd provision --preview --no-prompt` — passed; preview creates 13 expected resources in `rg-cudemo`.
-- Docker is not locally installed; both services use `remoteBuild: true`, and deployment uses ACR Tasks.
+- Release container images are built on GitHub-hosted runners ([.github/workflows/deploy.yml](../.github/workflows/deploy.yml)) and pushed to ACR; the GitHub deployment identity holds AcrPush plus the Search and Foundry data-plane roles. Local `azd`/ACR Tasks image builds used during troubleshooting are non-release and can be ignored (do not delete resources).
 - Static RBAC review — passed after removing a duplicate Foundry role assignment path.

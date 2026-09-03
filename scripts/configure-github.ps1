@@ -6,7 +6,8 @@
 .DESCRIPTION
     Uses the GitHub CLI ('gh') to:
       1. Create/ensure the 'production' deployment environment.
-      2. Set the non-secret OIDC and azd variables the deploy workflow reads (vars.*). No secrets.
+      2. Publish every non-secret variable the deploy workflow reads (vars.*): the OIDC identity
+         plus the resource names and endpoints taken from the validated Bicep outputs. No secrets.
       3. Create/update a branch ruleset on the default branch that requires the CI and CodeQL
          status checks (CodeQL blocking) and enables automatic GitHub Copilot code review.
 
@@ -18,18 +19,22 @@
     it and manual instructions are printed (non-fatal).
 
 .NOTES
-    Run 'gh auth login' first. AZURE_CLIENT_ID is the deployment identity's application (client) ID.
+    Run 'gh auth login' first. Deployment values are read from the selected azd environment
+    ('azd env get-values') unless a map is supplied with -EnvValues (or -SkipAzdLookup is set).
+    AZURE_CLIENT_ID defaults to the GitHub deployment identity's client id (Bicep output
+    GITHUB_IDENTITY_CLIENT_ID) when not passed explicitly.
 #>
 
 [CmdletBinding()]
 param(
     [string]$Repo = '',
-    [Parameter(Mandatory)][string]$AzureClientId,
+    [string]$AzureClientId = '',
     [Parameter(Mandatory)][string]$AzureTenantId,
-    [Parameter(Mandatory)][string]$AzureSubscriptionId,
+    [string]$AzureSubscriptionId = '',
     [string]$EnvironmentName = 'cudemo',
-    [string]$Location = 'southeastasia',
-    [string]$FoundryLocation = 'eastus2',
+    [hashtable]$EnvValues = @{},
+    [switch]$SkipAzdLookup,
+    [string]$AnalyzerRouterId = 'business-document-router',
     [string]$RulesetName = 'main-protection'
 )
 
@@ -84,13 +89,61 @@ function Set-EnvVariable {
     Write-Host "    set $Name"
 }
 
+# Resolve deployment values from a caller-supplied map or the selected azd environment. Bicep
+# output names are reused verbatim as GitHub variable names; AZURE_CLIENT_ID comes from the
+# GitHub deployment identity output (GITHUB_IDENTITY_CLIENT_ID).
+function Get-AzdEnvValues {
+    param([string]$Name)
+    Assert-Command -Name 'azd' -Hint 'Install the Azure Developer CLI or pass -EnvValues / -SkipAzdLookup.'
+    if ($Name) { & azd env select $Name 2>$null | Out-Null }
+    $map = @{}
+    foreach ($line in (& azd env get-values)) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"?(.*?)"?\s*$') {
+            $map[$Matches[1]] = $Matches[2]
+        }
+    }
+    return $map
+}
+
+function Resolve-Value {
+    param([hashtable]$Map, [string]$Key, [string]$Explicit = '', [string]$Default = '')
+    if (-not [string]::IsNullOrWhiteSpace($Explicit)) { return $Explicit }
+    if ($Map.ContainsKey($Key) -and -not [string]::IsNullOrWhiteSpace([string]$Map[$Key])) { return [string]$Map[$Key] }
+    return $Default
+}
+
+$values = if ($EnvValues.Count -gt 0) { $EnvValues } elseif ($SkipAzdLookup) { @{} } else { Get-AzdEnvValues -Name $EnvironmentName }
+
+$clientId = Resolve-Value -Map $values -Key 'GITHUB_IDENTITY_CLIENT_ID' -Explicit $AzureClientId
+$subId = Resolve-Value -Map $values -Key 'AZURE_SUBSCRIPTION_ID' -Explicit $AzureSubscriptionId
+$routerId = Resolve-Value -Map $values -Key 'ANALYZER_ROUTER_ID' -Explicit $AnalyzerRouterId -Default 'business-document-router'
+
 Write-Host '==> Setting production variables (no secrets)' -ForegroundColor Cyan
-Set-EnvVariable -Name 'AZURE_CLIENT_ID'       -Value $AzureClientId
+Set-EnvVariable -Name 'AZURE_CLIENT_ID'       -Value $clientId
 Set-EnvVariable -Name 'AZURE_TENANT_ID'       -Value $AzureTenantId
-Set-EnvVariable -Name 'AZURE_SUBSCRIPTION_ID' -Value $AzureSubscriptionId
-Set-EnvVariable -Name 'AZURE_ENV_NAME'        -Value $EnvironmentName
-Set-EnvVariable -Name 'AZURE_LOCATION'        -Value $Location
-Set-EnvVariable -Name 'AZURE_FOUNDRY_LOCATION' -Value $FoundryLocation
+Set-EnvVariable -Name 'AZURE_SUBSCRIPTION_ID' -Value $subId
+
+# Resource names and endpoints the deploy workflow maps into its job env. Keys match Bicep outputs.
+$deployVars = @(
+    'AZURE_RESOURCE_GROUP'
+    'AZURE_CONTAINER_REGISTRY_NAME'
+    'AZURE_CONTAINER_REGISTRY_ENDPOINT'
+    'API_CONTAINER_APP_NAME'
+    'WORKER_CONTAINER_APP_NAME'
+    'CLEANUP_JOB_NAME'
+    'FRONTEND_CONTAINER_APP_NAME'
+    'API_URL'
+    'FRONTEND_URL'
+    'FOUNDRY_ENDPOINT'
+    'SEARCH_ENDPOINT'
+    'SEARCH_INDEX_NAME'
+    'CHAT_DEPLOYMENT'
+    'EMBEDDING_DEPLOYMENT'
+)
+foreach ($name in $deployVars) {
+    Set-EnvVariable -Name $name -Value (Resolve-Value -Map $values -Key $name)
+}
+Set-EnvVariable -Name 'ANALYZER_ROUTER_ID' -Value $routerId
 
 # --- 3. Branch ruleset: required checks + automatic Copilot review ----------
 $requiredChecks = @('backend', 'frontend', 'bicep', 'Analyze (python)', 'Analyze (javascript-typescript)')

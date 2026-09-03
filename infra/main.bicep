@@ -95,6 +95,7 @@ var roles = {
   cognitiveServicesOpenAiUser: '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
   contentUnderstandingOwner: '4b42bd01-da42-4c92-9b07-15ea5bd6a602'
   acrPull: '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+  acrPush: '8311e382-0749-4cb8-b61a-304f252e45ec'
   contributor: 'b24988ac-6180-42a0-ab88-20f7382dd24c'
   rbacAdministrator: 'f58310d9-a9f6-439a-9e8d-f62e7b41a168'
 }
@@ -227,13 +228,25 @@ module acr 'br/public:avm/res/container-registry/registry:0.13.0' = {
     tags: commonTags
     acrSku: 'Basic'
     acrAdminUserEnabled: false
-    roleAssignments: [
-      {
-        roleDefinitionIdOrName: roles.acrPull
-        principalId: acrPullIdentity.outputs.principalId
-        principalType: 'ServicePrincipal'
-      }
-    ]
+    roleAssignments: concat(
+      [
+        {
+          roleDefinitionIdOrName: roles.acrPull
+          principalId: acrPullIdentity.outputs.principalId
+          principalType: 'ServicePrincipal'
+        }
+      ],
+      // The GitHub deployment identity pushes release images to ACR from the GitHub-hosted runner.
+      enableGitHub
+        ? [
+            {
+              roleDefinitionIdOrName: roles.acrPush
+              principalId: githubIdentity!.outputs.principalId
+              principalType: 'ServicePrincipal'
+            }
+          ]
+        : []
+    )
   }
 }
 
@@ -367,6 +380,21 @@ module search 'br/public:avm/res/search/search-service:0.13.0' = {
               principalId: deploymentPrincipalId
             }
           ]
+        : [],
+      // The GitHub deployment identity bootstraps the Search index during the deploy workflow.
+      enableGitHub
+        ? [
+            {
+              roleDefinitionIdOrName: roles.searchServiceContributor
+              principalId: githubIdentity!.outputs.principalId
+              principalType: 'ServicePrincipal'
+            }
+            {
+              roleDefinitionIdOrName: roles.searchIndexDataContributor
+              principalId: githubIdentity!.outputs.principalId
+              principalType: 'ServicePrincipal'
+            }
+          ]
         : []
     )
   }
@@ -478,6 +506,19 @@ resource foundryBootstrapRoles 'Microsoft.Authorization/roleAssignments@2022-04-
     properties: {
       roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleId)
       principalId: deploymentPrincipalId
+    }
+  }
+]
+
+// The GitHub deployment identity bootstraps Content Understanding defaults during the deploy workflow.
+resource githubFoundryRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for roleId in (enableGitHub ? [roles.cognitiveServicesOpenAiUser, roles.contentUnderstandingOwner] : []): {
+    name: guid(aiFoundry.id, githubIdentityName, roleId)
+    scope: aiFoundry
+    properties: {
+      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleId)
+      principalId: githubIdentity!.outputs.principalId
+      principalType: 'ServicePrincipal'
     }
   }
 ]
@@ -749,6 +790,7 @@ output FOUNDRY_ACCOUNT_NAME string = aiFoundry.name
 output CHAT_DEPLOYMENT string = gptDeployment.name
 output EMBEDDING_DEPLOYMENT string = embeddingModelDeployment.name
 output EMBEDDING_DIMENSIONS string = embeddingDimensions
+output ANALYZER_ROUTER_ID string = analyzerRouterId
 
 output CONTAINER_APPS_ENVIRONMENT_NAME string = managedEnv.outputs.name
 output FRONTEND_CONTAINER_APP_NAME string = frontendApp.name
