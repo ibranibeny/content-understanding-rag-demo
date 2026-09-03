@@ -1,0 +1,33 @@
+# Local Azure Developer CLI state
+.azure/
+.env
+.env.*
+!.env.example
+
+# Superpowers visual brainstorming artifacts
+.superpowers/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node and frontend builds
+node_modules/
+dist/
+coverage/
+
+# Browser tests
+test-results/
+playwright-report/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
