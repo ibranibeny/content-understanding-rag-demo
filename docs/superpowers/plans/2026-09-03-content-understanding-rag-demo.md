@@ -708,7 +708,7 @@ appended, and the reviewed diff is confined to Task 5C API/service/DTO/wiring/te
 - Modify: `backend/app/services/blob_service.py`
 - Modify: `backend/app/main.py`
 
-- [ ] **Step 1: Write failing ETag and race tests**
+- [x] **Step 1: Write failing ETag and race tests**
 
 ```python
 async def test_stale_etag_cannot_overwrite_document() -> None:
@@ -731,19 +731,19 @@ async def test_delete_waits_for_writer_lease_then_removes_all_artifacts() -> Non
     assert service.blobs.derived_deleted
 ```
 
-- [ ] **Step 2: Implement Table Storage mappings**
+- [x] **Step 2: Implement Table Storage mappings**
 
 Use partition keys `session:{sessionKey}` and row keys `session` / `document:{documentId}`. Convert Pydantic models to primitive entities, store ISO UTC values, preserve Azure ETags, and translate `ResourceModifiedError` to `ConcurrencyConflict`.
 
-- [ ] **Step 3: Implement control-blob lease fencing**
+- [x] **Step 3: Implement control-blob lease fencing**
 
 Create `control/{sessionKey}/{documentId}.lock`. Worker attempts use a renewable 60-second lease for the entire write pipeline. Deletion writes a Table tombstone first, then acquires the same lease before deleting. Lease acquisition retries with bounded jitter; API returns `202` immediately and cleanup finishes asynchronously.
 
-- [ ] **Step 4: Implement lifecycle-safe document routes**
+- [x] **Step 4: Implement lifecycle-safe document routes**
 
 List/get/retry/delete must verify the cookie-derived `sessionKey`. Retry only `failed` states and keeps deterministic IDs. Delete closes logical visibility at the tombstone write and returns `202`; the durable Table record remains in `deleting` state. The hourly cleanup job scans both expired and deleting records, acquires the control lease, and finishes physical removal. No ephemeral background task or unimplemented deletion queue is used. Return extraction only for that session.
 
-- [ ] **Step 5: Run Azurite and concurrency tests**
+- [x] **Step 5: Run Azurite and concurrency tests**
 
 Create `compose.yml` initially with a pinned Azurite service exposing ports 10000–10002 and a named volume. Task 14 extends this same file with application services.
 
@@ -753,7 +753,7 @@ Run: `cd backend && uv run pytest tests/repositories/test_table_repository.py te
 
 Expected: ETag conflicts, lease renewal, active-writer deletion, redelivery-after-delete, and cross-session access tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app backend/tests compose.yml
