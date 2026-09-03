@@ -35,3 +35,21 @@
 	suite passed with 122 tests; editor diagnostics reported no errors; `git diff --check` passed.
 - Decomposition: atomic. This was one parameterized contract-test addition. No scenario skill
 	root, Execution stage, or Breakdown Hints files were supplied.
+
+## 2026-09-03 — Task 2 configuration and readiness quality remediation
+
+- Scope: hardened readiness task ownership and all Task 2 Azure endpoint, quota, lifetime,
+	cookie-duration, and embedding-dimension settings without package or network access.
+- Root cause: `ReadinessRegistry.check()` cleaned up only its normal timeout path, so caller
+	cancellation bypassed probe cancellation; numeric settings had no bounds; Azure endpoints were
+	unvalidated strings; and the timeout regression depended on wall-clock scheduling.
+- TDD red: the new cancellation regression reproduced a lingering `readiness:*` task and the
+	configuration mutations were accepted; a separate maximum-bound red run produced the expected
+	`6 failed, 34 passed`.
+- Implementation: all spawned probes now enter `try/finally` cleanup, unfinished probes are
+	cancelled without extending the shared timeout, and callbacks consume every eventual outcome.
+	A reusable root-only HTTPS endpoint type validates and normalizes Search and Foundry endpoints.
+	Positive lower bounds and specification-derived maxima now constrain all numeric settings.
+- TDD green and final verification: focused configuration/readiness tests `53 passed`; Ruff
+	passed; strict mypy reported no issues in 11 source files; full backend suite `159 passed`;
+	`git diff --check` passed; editor diagnostics reported no errors in modified Python files.

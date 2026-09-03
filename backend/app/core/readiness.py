@@ -29,20 +29,20 @@ class ReadinessRegistry:
         if not tasks:
             return []
 
-        done, pending = await asyncio.wait(
-            tasks.values(), timeout=self._timeout_seconds, return_when=asyncio.ALL_COMPLETED
-        )
-        failed = {
-            name
-            for name, task in tasks.items()
-            if task in pending or (task in done and self._task_failed(task))
-        }
-
-        for task in pending:
-            task.cancel()
-            task.add_done_callback(self._consume_task_result)
-
-        return sorted(failed)
+        try:
+            done, pending = await asyncio.wait(
+                tasks.values(), timeout=self._timeout_seconds, return_when=asyncio.ALL_COMPLETED
+            )
+            return sorted(
+                name
+                for name, task in tasks.items()
+                if task in pending or (task in done and self._task_failed(task))
+            )
+        finally:
+            for task in tasks.values():
+                if not task.done():
+                    task.cancel()
+                task.add_done_callback(self._consume_task_result)
 
     @staticmethod
     def _task_failed(task: asyncio.Task[bool]) -> bool:
@@ -52,5 +52,7 @@ class ReadinessRegistry:
 
     @staticmethod
     def _consume_task_result(task: asyncio.Task[bool]) -> None:
-        if not task.cancelled():
+        try:
             task.exception()
+        except asyncio.CancelledError:
+            pass

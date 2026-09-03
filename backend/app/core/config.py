@@ -1,7 +1,37 @@
-from typing import Literal
+from typing import Annotated, Literal
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import Field, field_validator
+from pydantic import BeforeValidator, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def validate_https_endpoint(value: object) -> str:
+    """Validate and normalize a root HTTPS service endpoint."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("service endpoint must be a nonempty string")
+
+    try:
+        endpoint = urlsplit(value)
+        hostname = endpoint.hostname
+        port = endpoint.port
+    except ValueError as exc:
+        raise ValueError("service endpoint is malformed") from exc
+
+    if endpoint.scheme != "https" or not hostname or not endpoint.netloc:
+        raise ValueError("service endpoint must be an absolute HTTPS URL")
+    if endpoint.username is not None or endpoint.password is not None:
+        raise ValueError("service endpoint must not contain credentials")
+    if endpoint.query or endpoint.fragment:
+        raise ValueError("service endpoint must not contain a query or fragment")
+    if endpoint.path not in ("", "/"):
+        raise ValueError("service endpoint must be a root URL")
+
+    normalized_host = f"[{hostname}]" if ":" in hostname else hostname
+    netloc = f"{normalized_host}:{port}" if port is not None else normalized_host
+    return urlunsplit(("https", netloc, "", "", ""))
+
+
+HttpsEndpoint = Annotated[str, BeforeValidator(validate_https_endpoint)]
 
 
 class Settings(BaseSettings):
@@ -28,13 +58,13 @@ class Settings(BaseSettings):
     )
     table_name: str = Field(default="workshop", validation_alias="TABLE_NAME")
 
-    search_endpoint: str = Field(
+    search_endpoint: HttpsEndpoint = Field(
         default="https://localhost", validation_alias="SEARCH_ENDPOINT"
     )
     search_index_name: str = Field(
         default="document-chunks", validation_alias="SEARCH_INDEX_NAME"
     )
-    foundry_endpoint: str = Field(
+    foundry_endpoint: HttpsEndpoint = Field(
         default="https://demo.services.ai.azure.com", validation_alias="FOUNDRY_ENDPOINT"
     )
     analyzer_router_id: str = Field(
@@ -45,7 +75,7 @@ class Settings(BaseSettings):
         default="text-embedding-3-large", validation_alias="EMBEDDING_DEPLOYMENT"
     )
     embedding_dimensions: int = Field(
-        default=3072, validation_alias="EMBEDDING_DIMENSIONS"
+        default=3072, gt=0, validation_alias="EMBEDDING_DIMENSIONS"
     )
 
     cookie_name: str = Field(default="cu_session", validation_alias="COOKIE_NAME")
@@ -55,18 +85,28 @@ class Settings(BaseSettings):
         default="strict", validation_alias="COOKIE_SAME_SITE"
     )
     cookie_path: str = Field(default="/", validation_alias="COOKIE_PATH")
-    cookie_max_age_seconds: int = Field(default=86400, validation_alias="COOKIE_MAX_AGE_SECONDS")
+    cookie_max_age_seconds: int = Field(
+        default=86400, gt=0, le=86400, validation_alias="COOKIE_MAX_AGE_SECONDS"
+    )
 
-    max_file_bytes: int = Field(default=100 * 1024 * 1024, validation_alias="MAX_FILE_BYTES")
-    max_documents: int = Field(default=5, validation_alias="MAX_DOCUMENTS")
+    max_file_bytes: int = Field(
+        default=100 * 1024 * 1024,
+        gt=0,
+        le=100 * 1024 * 1024,
+        validation_alias="MAX_FILE_BYTES",
+    )
+    max_documents: int = Field(default=5, gt=0, le=5, validation_alias="MAX_DOCUMENTS")
     max_session_bytes: int = Field(
-        default=500 * 1024 * 1024, validation_alias="MAX_SESSION_BYTES"
+        default=500 * 1024 * 1024,
+        gt=0,
+        le=500 * 1024 * 1024,
+        validation_alias="MAX_SESSION_BYTES",
     )
     max_questions_per_hour: int = Field(
-        default=30, validation_alias="MAX_QUESTIONS_PER_HOUR"
+        default=30, gt=0, le=30, validation_alias="MAX_QUESTIONS_PER_HOUR"
     )
     session_lifetime_hours: int = Field(
-        default=24, validation_alias="SESSION_LIFETIME_HOURS"
+        default=24, gt=0, le=24, validation_alias="SESSION_LIFETIME_HOURS"
     )
 
     release_sha: str = Field(default="local", validation_alias="RELEASE_SHA")

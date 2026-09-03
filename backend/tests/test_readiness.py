@@ -1,6 +1,5 @@
 import asyncio
 from collections.abc import Mapping
-from time import perf_counter
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,12 +27,79 @@ async def slow_check() -> bool:
     return True
 
 
-async def cancellation_resistant_check() -> bool:
+async def test_registry_total_timeout_does_not_wait_for_probe_cancellation() -> None:
+    timeout_seconds = 0.01
+    cancellation_received = asyncio.Event()
+    release_probe = asyncio.Event()
+    probe_finished = asyncio.Event()
+
+    async def cancellation_resistant_check() -> bool:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_received.set()
+            await release_probe.wait()
+        finally:
+            probe_finished.set()
+        return True
+
+    registry = ReadinessRegistry(timeout_seconds=timeout_seconds)
+    registry.register("search", cancellation_resistant_check)
+
+    assert await registry.check() == ["search"]
+    await asyncio.wait_for(cancellation_received.wait(), timeout=timeout_seconds * 10)
+    assert not probe_finished.is_set()
+
+    release_probe.set()
+    await probe_finished.wait()
+
+
+async def test_cancelling_registry_check_cleans_up_spawned_probe_tasks() -> None:
+    probe_started = asyncio.Event()
+    cancellation_received = asyncio.Event()
+    release_probe = asyncio.Event()
+    probe_finished = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    unhandled_contexts: list[dict[str, object]] = []
+    previous_exception_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled_contexts.append(context))
+
+    async def cancellation_resistant_check() -> bool:
+        probe_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_received.set()
+            await release_probe.wait()
+            raise RuntimeError("probe failed during cancellation")
+        finally:
+            probe_finished.set()
+
+    registry = ReadinessRegistry(timeout_seconds=2.0)
+    registry.register("resistant", cancellation_resistant_check)
+    registry_task = asyncio.create_task(registry.check())
+
     try:
-        await asyncio.sleep(1)
-    except asyncio.CancelledError:
-        await asyncio.sleep(0.2)
-    return True
+        await probe_started.wait()
+        registry_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await registry_task
+
+        await cancellation_received.wait()
+        release_probe.set()
+        await probe_finished.wait()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert not [
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name().startswith("readiness:")
+        ]
+        assert unhandled_contexts == []
+    finally:
+        release_probe.set()
+        loop.set_exception_handler(previous_exception_handler)
 
 
 async def test_registry_reports_sorted_named_failures() -> None:
@@ -50,18 +116,6 @@ async def test_registry_reports_timed_out_check_by_name() -> None:
     registry.register("search", slow_check)
 
     assert await registry.check() == ["search"]
-
-
-async def test_registry_total_timeout_does_not_wait_for_probe_cancellation() -> None:
-    registry = ReadinessRegistry(timeout_seconds=0.01)
-    registry.register("search", cancellation_resistant_check)
-
-    started_at = perf_counter()
-    assert await registry.check() == ["search"]
-    elapsed = perf_counter() - started_at
-    await asyncio.sleep(0.21)
-
-    assert elapsed < 0.1
 
 
 def test_ready_route_returns_200_when_all_checks_pass() -> None:
