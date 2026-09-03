@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
-from app.core.config import Settings
+from app.core.config import SESSION_LIFETIME_HOURS, Settings
 from app.core.errors import AppError, ConcurrencyConflict
 from app.domain.models import SessionRecord, SessionResponse
 from app.domain.protocols import Clock, SessionRepository
@@ -58,7 +58,7 @@ class SessionService:
             record = SessionRecord(
                 session_key=sha256(token).hexdigest(),
                 created_at=now,
-                expires_at=now + timedelta(hours=self._settings.session_lifetime_hours),
+                expires_at=now + timedelta(hours=SESSION_LIFETIME_HOURS),
             )
             try:
                 await self._repository.create(record)

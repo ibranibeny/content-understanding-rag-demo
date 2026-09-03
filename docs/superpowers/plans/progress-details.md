@@ -115,3 +115,20 @@
 	passed.
 - Decomposition: atomic. No scenario skill root, Execution stage, or Breakdown Hints files were
 	supplied; the repository, service, and route form one session-isolation boundary.
+
+## 2026-09-03 — Task 3 session security invariant remediation
+
+- Scope: removed session lifetime and cookie contract values from runtime configuration while
+	preserving quota settings, token rotation, optimistic concurrency, and dependency injection.
+- Root cause: session expiry and cookie construction read caller-controlled `Settings` fields, so
+	accepted lower values could shorten sessions and change the cookie name, age, flags, or path.
+- TDD red: focused configuration, service, and API tests produced the expected `8 failed, 125
+	passed`; a separate Secure override case also failed before implementation.
+- Implementation: module constants now fix lifetime at 24 hours and the cookie contract at
+	`cu_session`, Max-Age 86400, HttpOnly, SameSite strict, and Path `/`. Secure is derived only from
+	production mode; local and test remain insecure for local HTTP development.
+- TDD green and final verification: focused tests `134 passed`; Ruff passed; strict mypy reported
+	no issues in 26 source files; full backend pytest passed `253 passed`; `git diff --check` passed;
+	editor diagnostics reported no errors in all six modified Python files.
+- Decision: no user decision is required; security invariants are intentionally absent from
+	`Settings`, and obsolete overrides are ignored by the existing extra-field policy.

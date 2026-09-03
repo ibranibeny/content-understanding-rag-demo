@@ -16,7 +16,24 @@ def test_settings_defaults_lock_required_models_and_limits() -> None:
     assert settings.max_documents == 5
     assert settings.max_session_bytes == 500 * 1024 * 1024
     assert settings.max_questions_per_hour == 30
-    assert settings.session_lifetime_hours == 24
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("session_lifetime_hours", 1),
+        ("cookie_name", "x"),
+        ("cookie_max_age_seconds", 1),
+        ("cookie_http_only", False),
+        ("cookie_same_site", "lax"),
+        ("cookie_path", "/x"),
+        ("cookie_secure", True),
+    ],
+)
+def test_settings_do_not_expose_session_security_invariants(field: str, value: object) -> None:
+    settings = Settings.model_validate({field: value})
+
+    assert not hasattr(settings, field)
 
 
 @pytest.mark.parametrize(
@@ -46,8 +63,6 @@ def test_settings_accept_environment_aliases(monkeypatch: pytest.MonkeyPatch) ->
         "max_documents",
         "max_session_bytes",
         "max_questions_per_hour",
-        "session_lifetime_hours",
-        "cookie_max_age_seconds",
         "embedding_dimensions",
     ],
 )
@@ -64,8 +79,6 @@ def test_settings_reject_nonpositive_counts_and_durations(field: str, value: int
         ("max_documents", 6),
         ("max_session_bytes", 500 * 1024 * 1024 + 1),
         ("max_questions_per_hour", 31),
-        ("session_lifetime_hours", 25),
-        ("cookie_max_age_seconds", 86401),
     ],
 )
 def test_settings_reject_values_above_workshop_contract_maxima(field: str, value: int) -> None:

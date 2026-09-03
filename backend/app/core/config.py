@@ -8,6 +8,12 @@ from pydantic import BeforeValidator, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+SESSION_LIFETIME_HOURS = 24
+SESSION_COOKIE_NAME = "cu_session"
+SESSION_COOKIE_MAX_AGE_SECONDS = 86_400
+SESSION_COOKIE_HTTP_ONLY = True
+SESSION_COOKIE_SAME_SITE: Literal["strict"] = "strict"
+SESSION_COOKIE_PATH = "/"
 
 
 def _normalize_dns_hostname(hostname: str) -> str:
@@ -131,17 +137,6 @@ class Settings(BaseSettings):
         default=3072, gt=0, validation_alias="EMBEDDING_DIMENSIONS"
     )
 
-    cookie_name: str = Field(default="cu_session", validation_alias="COOKIE_NAME")
-    cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
-    cookie_http_only: bool = Field(default=True, validation_alias="COOKIE_HTTP_ONLY")
-    cookie_same_site: Literal["strict"] = Field(
-        default="strict", validation_alias="COOKIE_SAME_SITE"
-    )
-    cookie_path: str = Field(default="/", validation_alias="COOKIE_PATH")
-    cookie_max_age_seconds: int = Field(
-        default=86400, gt=0, le=86400, validation_alias="COOKIE_MAX_AGE_SECONDS"
-    )
-
     max_file_bytes: int = Field(
         default=100 * 1024 * 1024,
         gt=0,
@@ -158,10 +153,6 @@ class Settings(BaseSettings):
     max_questions_per_hour: int = Field(
         default=30, gt=0, le=30, validation_alias="MAX_QUESTIONS_PER_HOUR"
     )
-    session_lifetime_hours: int = Field(
-        default=24, gt=0, le=24, validation_alias="SESSION_LIFETIME_HOURS"
-    )
-
     release_sha: str = Field(default="local", validation_alias="RELEASE_SHA")
     app_mode: Literal["local", "test", "production"] = Field(
         default="local", validation_alias="APP_MODE"

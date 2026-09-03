@@ -4,6 +4,7 @@ from hashlib import sha256
 
 import pytest
 
+from app.core.config import Settings
 from app.core.errors import AppError, ConcurrencyConflict
 from app.domain.models import SessionRecord
 from app.repositories.memory_repository import MemorySessionRepository
@@ -71,6 +72,20 @@ async def test_issue_hashes_exactly_32_random_bytes_and_expires_in_24_hours() ->
     assert stored is not None
     assert stored[0] == issued.record
     assert RAW_TOKEN not in stored[0].model_dump_json()
+
+
+async def test_issue_ignores_attempted_session_lifetime_override() -> None:
+    repository = MemorySessionRepository()
+    service = SessionService(
+        repository,
+        MutableClock(),
+        settings=Settings.model_validate({"session_lifetime_hours": 1}),
+        token_factory=lambda: TOKEN,
+    )
+
+    issued = await service.issue()
+
+    assert issued.record.expires_at == NOW + timedelta(hours=24)
 
 
 async def test_resolve_round_trips_cookie_and_looks_up_only_by_derived_hash() -> None:

@@ -21,10 +21,10 @@ class MutableClock:
         return self.current
 
 
-def make_client(*, secure: bool = False) -> tuple[TestClient, MemorySessionRepository, MutableClock]:
+def make_client(*, app_mode: str = "test") -> tuple[TestClient, MemorySessionRepository, MutableClock]:
     repository = MemorySessionRepository()
     clock = MutableClock()
-    settings = Settings(cookie_secure=secure, app_mode="test")
+    settings = Settings.model_validate({"app_mode": app_mode})
     tokens = iter((TOKEN, b"y" * 32, b"z" * 32))
     service = SessionService(
         repository, clock, settings=settings, token_factory=lambda: next(tokens)
@@ -60,6 +60,40 @@ def test_first_call_sets_cookie_and_returns_only_public_quota_dto() -> None:
     assert repository is not None
 
 
+def test_cookie_contract_ignores_all_attempted_settings_overrides() -> None:
+    settings = Settings.model_validate(
+        {
+            "app_mode": "test",
+            "session_lifetime_hours": 1,
+            "cookie_name": "x",
+            "cookie_max_age_seconds": 1,
+            "cookie_http_only": False,
+            "cookie_same_site": "lax",
+            "cookie_path": "/x",
+            "cookie_secure": True,
+        }
+    )
+    service = SessionService(
+        MemorySessionRepository(),
+        MutableClock(),
+        settings=settings,
+        token_factory=lambda: TOKEN,
+    )
+    client = TestClient(create_app(settings=settings, session_service=service))
+    client.cookies.set("x", "malformed")
+
+    response = client.get("/api/session")
+
+    cookie = response.headers["set-cookie"].lower()
+    assert response.json()["expiresAt"] == "2026-09-04T10:00:00Z"
+    assert cookie.startswith("cu_session=")
+    assert "max-age=86400" in cookie
+    assert "httponly" in cookie
+    assert "samesite=strict" in cookie
+    assert "path=/" in cookie
+    assert "secure" not in cookie
+
+
 def test_repeat_call_reuses_cookie_without_setting_it_again() -> None:
     client, _, _ = make_client()
     first = client.get("/api/session")
@@ -92,8 +126,23 @@ def test_expired_cookie_rotates() -> None:
     assert response.status_code == 200
     assert "set-cookie" in response.headers
     assert response.json()["expiresAt"] == "2026-09-05T10:00:00Z"
+
+
 def test_deployed_cookie_is_secure_with_all_other_flags() -> None:
-    client, _, _ = make_client(secure=True)
+    async def ready() -> bool:
+        return True
+
+    settings = Settings(app_mode="production")
+    checks = {name: ready for name in ("blob", "queue", "table", "search", "foundry")}
+    service = SessionService(
+        MemorySessionRepository(),
+        MutableClock(),
+        settings=settings,
+        token_factory=lambda: TOKEN,
+    )
+    client = TestClient(
+        create_app(settings=settings, readiness_checks=checks, session_service=service)
+    )
 
     response = client.get("/api/session")
 
