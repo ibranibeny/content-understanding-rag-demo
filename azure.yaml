@@ -18,6 +18,7 @@ services:
     docker:
       path: ./Dockerfile
       context: .
+      remoteBuild: true
   api:
     project: ./backend
     language: py
@@ -25,3 +26,4 @@ services:
     docker:
       path: ./Dockerfile
       context: .
+      remoteBuild: true

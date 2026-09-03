@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-**Status:** Ready for Validation
+**Status:** Validated
 
 ## Goal
 Deploy the functional Content Understanding RAG workshop MVP.
@@ -93,6 +93,20 @@ alerts module; consolidated into `main.bicep` rather than per-concern modules.
 
 ## Validation
 
+### All validation checks pass
+- [x] 1. AZD Installation
+- [x] 2. Schema Validation
+- [x] 3. Environment Setup
+- [x] 4. Authentication Check
+- [x] 5. Subscription/Location Check
+- [x] 6. Aspire Pre-Provisioning Checks (not applicable)
+- [x] 7. Provision Preview
+- [x] 8. Build Verification
+- [x] 9. Docker Build Context Validation
+- [x] 10. Package Validation (remote ACR build configured; source contracts validated)
+- [x] 11. Azure Policy and RBAC static validation
+- [x] 12. Aspire Post-Provisioning Checks (not applicable)
+
 - `az bicep format --file infra/main.bicep` — clean.
 - `az bicep build --file infra/main.bicep` — zero errors and zero warnings.
 - `az bicep build-params` on both `.bicepparam` files — succeeds.
@@ -111,3 +125,16 @@ alerts module; consolidated into `main.bicep` rather than per-concern modules.
   keeps the build warning-free (tracked upstream at aka.ms/bicep-type-issues).
 - The Content Understanding roles are not yet on the Microsoft Learn built-in roles page; GUIDs were
   verified against Azure role catalogs.
+
+## Section 7: Validation Proof
+
+- `azd version` — 1.27.0 installed.
+- `azd auth login --check-status` — authenticated as `bibrani@contoso.day`.
+- Azure subscription — `ME-MngEnvMCAP708029-benyibrani-1`; app region Southeast Asia; Foundry East US 2.
+- `az bicep build --file infra/main.bicep --stdout` — passed.
+- `uv --project backend run pytest infra/tests -q` — 27 passed.
+- Backend quality gate — Ruff passed, strict mypy passed, 677 tests passed.
+- Frontend quality gate — lint, type-check, 7 tests, and production build passed.
+- `azd provision --preview --no-prompt` — passed; preview creates 13 expected resources in `rg-cudemo`.
+- Docker is not locally installed; both services use `remoteBuild: true`, and deployment uses ACR Tasks.
+- Static RBAC review — passed after removing a duplicate Foundry role assignment path.

@@ -483,18 +483,6 @@ resource foundryBootstrapRoles 'Microsoft.Authorization/roleAssignments@2022-04-
   }
 ]
 
-resource foundryGithubRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for roleId in (enableGitHub ? [roles.contentUnderstandingOwner] : []): {
-    name: guid(aiFoundry.id, githubIdentityName, roleId)
-    scope: aiFoundry
-    properties: {
-      roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', roleId)
-      principalId: githubIdentity!.outputs.principalId
-      principalType: 'ServicePrincipal'
-    }
-  }
-]
-
 resource githubResourceGroupRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
   for roleId in (enableGitHub ? [roles.contributor, roles.rbacAdministrator] : []): {
     name: guid(resourceGroup().id, githubIdentityName, roleId)
