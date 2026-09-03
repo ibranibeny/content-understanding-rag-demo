@@ -1,0 +1,25 @@
+{
+  "analyzerId": "workshop-receipt",
+  "name": "Receipt",
+  "description": "Extracts merchant, transaction, payment, totals, and items from a receipt.",
+  "baseAnalyzerId": "prebuilt-document",
+  "dynamicFieldSchema": false,
+  "config": {
+    "returnDetails": true,
+    "tableFormat": "markdown",
+    "estimateFieldSourceAndConfidence": true
+  },
+  "fieldSchema": {
+    "name": "ReceiptFields",
+    "fields": {
+      "merchantName": {"type": "string", "description": "Merchant name."},
+      "transactionDate": {"type": "date", "description": "Transaction date."},
+      "currency": {"type": "string", "description": "Currency code or symbol."},
+      "subtotal": {"type": "number", "description": "Amount before tax."},
+      "tax": {"type": "number", "description": "Tax amount."},
+      "total": {"type": "number", "description": "Total paid."},
+      "paymentMethod": {"type": "string", "description": "Payment method shown."},
+      "items": {"type": "array", "description": "Purchased items.", "items": {"type": "object", "properties": {"description": {"type": "string"}, "quantity": {"type": "number"}, "unitPrice": {"type": "number"}, "amount": {"type": "number"}}}}
+    }
+  }
+}

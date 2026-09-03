@@ -1,0 +1,26 @@
+{
+  "analyzerId": "workshop-contract",
+  "name": "Contract",
+  "description": "Extracts parties, dates, terms, obligations, termination, and risks from a contract.",
+  "baseAnalyzerId": "prebuilt-document",
+  "dynamicFieldSchema": false,
+  "config": {
+    "returnDetails": true,
+    "tableFormat": "markdown",
+    "estimateFieldSourceAndConfidence": true
+  },
+  "fieldSchema": {
+    "name": "ContractFields",
+    "fields": {
+      "title": {"type": "string", "description": "Contract title."},
+      "parties": {"type": "array", "description": "Contracting parties.", "items": {"type": "string"}},
+      "effectiveDate": {"type": "date", "description": "Effective date."},
+      "expirationDate": {"type": "date", "description": "Expiration date."},
+      "renewalTerms": {"type": "string", "description": "Renewal provisions."},
+      "governingLaw": {"type": "string", "description": "Governing law or jurisdiction."},
+      "obligations": {"type": "array", "description": "Material obligations.", "items": {"type": "string"}},
+      "terminationClauses": {"type": "array", "description": "Termination provisions.", "items": {"type": "string"}},
+      "riskFlags": {"type": "array", "description": "Potential contract risks.", "items": {"type": "string"}}
+    }
+  }
+}
