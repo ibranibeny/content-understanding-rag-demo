@@ -20,6 +20,7 @@ from app.repositories.memory_repository import MemoryApplicationRepository, Memo
 from app.repositories.table_repository import TableApplicationRepository
 from app.services.blob_service import AzureBlobStore, UserDelegationBlobSasSigner
 from app.services.queue_service import AzureWorkQueue
+from app.services.search_service import AzureSearchService
 
 
 async def ready() -> bool:
@@ -55,6 +56,12 @@ class Blobs:
 
 
 class Search:
+    async def is_ready(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
     async def delete_for_document(self, session_key: str, document_id: UUID) -> None:
         del session_key, document_id
 
@@ -95,33 +102,11 @@ def test_production_rejects_omitted_dependency_bundle_instead_of_using_memory() 
         create_app(settings=production_settings())
 
 
-def test_production_dependency_factory_requires_explicit_chunk_search() -> None:
-    with pytest.raises(TypeError, match="chunk_search"):
-        create_production_dependencies(production_settings())  # type: ignore[call-arg]
+def test_production_dependency_factory_does_not_accept_keys_or_require_search_injection() -> None:
     parameters = signature(create_production_dependencies).parameters
+    assert "chunk_search" not in parameters
     assert "account_key" not in parameters
     assert "sas_signer" not in parameters
-
-
-def test_production_app_fails_clearly_until_search_adapter_is_wired() -> None:
-    import os
-
-    previous_mode = os.environ.get("APP_MODE")
-    previous_origin = os.environ.get("FRONTEND_ORIGIN")
-    os.environ["APP_MODE"] = "production"
-    os.environ["FRONTEND_ORIGIN"] = "https://frontend.example.com"
-    with pytest.raises(RuntimeError, match="ChunkSearch.*not configured"):
-        try:
-            create_production_app()
-        finally:
-            if previous_mode is None:
-                os.environ.pop("APP_MODE", None)
-            else:
-                os.environ["APP_MODE"] = previous_mode
-            if previous_origin is None:
-                os.environ.pop("FRONTEND_ORIGIN", None)
-            else:
-                os.environ["FRONTEND_ORIGIN"] = previous_origin
 
 
 def test_production_wires_one_explicit_dependency_bundle_without_memory_defaults() -> None:
@@ -217,12 +202,12 @@ def test_production_helper_constructs_table_queue_and_three_container_blob_graph
     )
     dependencies = create_production_dependencies(
         settings,
-        Search(),
         {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
         credential=credential,  # type: ignore[arg-type]
         repository_factory=lambda settings, credential: repository,
         queue_factory=lambda settings, credential: queue,
         blob_factory=lambda settings, credential: blobs,
+        search_factory=lambda settings, credential: Search(),
     )
 
     assert isinstance(dependencies.application_repository, TableApplicationRepository)
@@ -248,20 +233,21 @@ def test_production_factory_loads_settings_builds_dependencies_and_closes_once(
     queue = AzureWorkQueue(QueueClient(), QueueClient())
     blobs = Blobs()
     dependencies = create_production_dependencies(
-        production_settings(), Search(),
+        production_settings(),
         {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
         credential=credential,  # type: ignore[arg-type]
         repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
         queue_factory=lambda settings, credential: queue,
         blob_factory=lambda settings, credential: blobs,
+        search_factory=lambda settings, credential: Search(),
     )
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("FRONTEND_ORIGIN", "https://frontend.example.com")
     monkeypatch.setattr(
-        "app.main.create_production_dependencies", lambda settings, search: dependencies
+        "app.main.create_production_dependencies", lambda settings: dependencies
     )
 
-    app = create_production_app(Search())
+    app = create_production_app()
     assert app.state.document_repository is repository.documents
     with TestClient(app):
         pass
@@ -277,17 +263,18 @@ def test_production_factory_closes_dependencies_once_when_app_construction_fails
     queue = AzureWorkQueue(QueueClient(), QueueClient(), owns_clients=True)
     blobs = Blobs()
     dependencies = create_production_dependencies(
-        production_settings(), Search(),
+        production_settings(),
         {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
         credential=credential,  # type: ignore[arg-type]
         repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
         queue_factory=lambda settings, credential: queue,
         blob_factory=lambda settings, credential: blobs,
+        search_factory=lambda settings, credential: Search(),
     )
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("FRONTEND_ORIGIN", "https://frontend.example.com")
     monkeypatch.setattr(
-        "app.main.create_production_dependencies", lambda settings, search: dependencies
+        "app.main.create_production_dependencies", lambda settings: dependencies
     )
     monkeypatch.setattr(
         "app.main.create_app",
@@ -295,7 +282,7 @@ def test_production_factory_closes_dependencies_once_when_app_construction_fails
     )
 
     with pytest.raises(RuntimeError, match="construction failed"):
-        create_production_app(Search())
+        create_production_app()
     assert credential.close_calls == 1
     assert blobs.closed == 1
 
@@ -321,17 +308,61 @@ async def test_production_close_attempts_every_resource_when_one_close_fails() -
             closed.append("credential")
 
     dependencies = create_production_dependencies(
-        production_settings(), Search(),
+        production_settings(),
         {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
         credential=ClosingCredential(),  # type: ignore[arg-type]
         repository_factory=lambda settings, credential: FailingRepository(),  # type: ignore[arg-type]
         queue_factory=lambda settings, credential: ClosingQueue(QueueClient(), QueueClient()),
         blob_factory=lambda settings, credential: ClosingBlobs(),
+        search_factory=lambda settings, credential: Search(),
     )
 
     with pytest.raises(RuntimeError, match="repository close failed"):
         await dependencies.aclose()  # type: ignore[attr-defined]
     assert set(closed) == {"repository", "queue", "blobs", "credential"}
+
+
+async def test_production_constructs_closes_and_uses_real_search_as_chunk_search() -> None:
+    credential = Credential()
+    repository = DurableRepository()
+    queue = AzureWorkQueue(QueueClient(), QueueClient())
+    blobs = Blobs()
+    search = Search()
+    search.closed = 0  # type: ignore[attr-defined]
+
+    async def close_search() -> None:
+        search.closed += 1  # type: ignore[attr-defined]
+
+    search.aclose = close_search  # type: ignore[attr-defined,method-assign]
+    dependencies = create_production_dependencies(
+        production_settings(),
+        credential=credential,  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
+        queue_factory=lambda settings, credential: queue,
+        blob_factory=lambda settings, credential: blobs,
+        search_factory=lambda settings, credential: search,  # type: ignore[arg-type]
+    )
+
+    assert dependencies.chunk_search is search
+    assert dependencies.readiness_checks["search"] == search.is_ready  # type: ignore[attr-defined]
+    await dependencies.aclose()  # type: ignore[attr-defined]
+    assert search.closed == 1  # type: ignore[attr-defined]
+
+
+def test_default_production_search_factory_builds_keyless_sdk_adapter() -> None:
+    credential = Credential()
+    repository = DurableRepository()
+    queue = AzureWorkQueue(QueueClient(), QueueClient())
+    blobs = Blobs()
+    dependencies = create_production_dependencies(
+        production_settings(),
+        credential=credential,  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
+        queue_factory=lambda settings, credential: queue,
+        blob_factory=lambda settings, credential: blobs,
+    )
+
+    assert isinstance(dependencies.chunk_search, AzureSearchService)
 
 
 def test_cli_selects_production_or_explicit_azurite_factory(

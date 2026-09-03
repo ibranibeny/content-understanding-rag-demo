@@ -49,6 +49,7 @@ from app.services.deletion_service import DeletionService
 from app.services.document_service import DocumentService
 from app.services.outbox_service import OutboxDispatcher
 from app.services.queue_service import AzureWorkQueue, QueueClientLike
+from app.services.search_service import AzureSearchService
 from app.services.session_service import SessionService, SystemClock
 from app.services.upload_service import UploadService
 
@@ -92,6 +93,12 @@ class CloseableApplicationWorkQueue(ApplicationWorkQueue, Protocol):
     async def aclose(self) -> None: ...
 
 
+class CloseableChunkSearch(ChunkSearch, Protocol):
+    async def is_ready(self) -> bool: ...
+
+    async def aclose(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ApplicationDependencies:
     application_repository: ApplicationRepository
@@ -105,6 +112,7 @@ class ApplicationDependencies:
 class ProductionDependencies(ApplicationDependencies):
     application_repository: CloseableApplicationRepository
     work_queue: CloseableApplicationWorkQueue
+    chunk_search: CloseableChunkSearch
     credential: AsyncTokenCredential
 
     async def aclose(self) -> None:
@@ -112,6 +120,7 @@ class ProductionDependencies(ApplicationDependencies):
             self.application_repository.aclose(),
             self.work_queue.aclose(),
             self.blob_store.aclose(),
+            self.chunk_search.aclose(),
             self.credential.close(),
             return_exceptions=True,
         )
@@ -159,7 +168,6 @@ class LocalDependencies(ApplicationDependencies):
 
 def create_production_dependencies(
     settings: Settings,
-    chunk_search: ChunkSearch,
     readiness_checks: Mapping[str, ReadinessCheck] | None = None,
     *,
     credential: AsyncTokenCredential | None = None,
@@ -169,6 +177,9 @@ def create_production_dependencies(
     queue_factory: Callable[[Settings, AsyncTokenCredential], CloseableApplicationWorkQueue]
     | None = None,
     blob_factory: Callable[[Settings, AsyncTokenCredential], BlobStore] | None = None,
+    search_factory: Callable[
+        [Settings, AsyncTokenCredential], CloseableChunkSearch
+    ] | None = None,
 ) -> ApplicationDependencies:
     if settings.app_mode != "production":
         raise ValueError("production dependencies require production settings")
@@ -202,14 +213,26 @@ def create_production_dependencies(
             credential=actual_credential,
         )
     )
+    search = (
+        search_factory(settings, actual_credential)
+        if search_factory is not None
+        else AzureSearchService(
+            settings.search_endpoint,
+            settings.search_index_name,
+            credential=actual_credential,
+        )
+    )
+    actual_readiness = dict(readiness_checks) if readiness_checks is not None else {
+        name: _not_ready for name in PRODUCTION_READINESS_CHECKS
+    }
+    if readiness_checks is None:
+        actual_readiness["search"] = search.is_ready
     return ProductionDependencies(
         application_repository=repository,
         work_queue=queue,
         blob_store=blobs,
-        chunk_search=chunk_search,
-        readiness_checks=readiness_checks or {
-            name: _not_ready for name in PRODUCTION_READINESS_CHECKS
-        },
+        chunk_search=search,
+        readiness_checks=actual_readiness,
         credential=actual_credential,
     )
 
@@ -465,15 +488,11 @@ def create_app(
     return app
 
 
-def create_production_app(chunk_search: ChunkSearch | None = None) -> FastAPI:
+def create_production_app() -> FastAPI:
     settings = Settings()
     if settings.app_mode != "production":
         raise ValueError("production app factory requires APP_MODE=production")
-    if chunk_search is None:
-        raise RuntimeError(
-            "ChunkSearch is not configured; Task 7 must wire the Azure AI Search adapter"
-        )
-    dependencies = create_production_dependencies(settings, chunk_search)
+    dependencies = create_production_dependencies(settings)
     try:
         return create_app(settings=settings, dependencies=dependencies)
     except BaseException:

@@ -828,6 +828,45 @@ git commit -m "feat: add mixed document analyzers"
 
 ### Task 7: Implement chunking, embeddings, and Azure AI Search
 
+**Execution research (2026-09-03):** Tasks 1-6 already provide frozen `DocumentChunk` and
+`RetrievedEvidence` models, narrow `EmbeddingClient`/`ChunkSearch` protocols, validated production
+Search and Foundry endpoints, the fixed `text-embedding-3-large` deployment and 3,072 dimensions,
+an ownership-aware Azure dependency graph, and a fail-closed production application factory that
+explicitly defers Search wiring to this task. The locked environment contains `tiktoken` 0.12 with
+`cl100k_base` available from the local cache and Azure AI Search SDK 11.6; no package or feed change
+is required. Chunking will expose immutable drafts because vectors and session/document metadata are
+added by the future worker, process heading/page/slide/image regions independently so overlap cannot
+cross unrelated sections, prefer paragraph and sentence boundaries, and use token windows only for
+oversized sentences. Tokenization uses cached `cl100k_base` and catches loader failure with a tested,
+deterministic local lexical approximation that performs no download. Embeddings use direct async
+HTTP with an injected Entra credential/client, split requests to at most 64 inputs and a bounded token
+budget, reject individual inputs above 8,192 tokens and every response not exactly 3,072-dimensional,
+honor bounded `Retry-After` for 429/5xx, emit only safe errors, and close only owned resources. Search
+will expose one canonical schema also checked into `scripts/search-index.json`, construct SDK index
+models for `SearchIndexClient.create_or_update_index`, use only token credentials, validate every
+batch result, enumerate all filtered keys before batched deletes, and issue one BM25/vector/semantic
+request with a server-built mandatory session filter. The production factory will construct and own
+`AzureSearchService` with the shared `DefaultAzureCredential`, pass it to deletion as `ChunkSearch`,
+use its readiness probe, and close it before the shared credential; injected adapters remain caller-
+owned. This is the user-requested single Task 7 integration boundary and is treated as atomic; no
+modernization scenario skill root, Execution-stage file, standalone task/progress files, or Breakdown
+Hints were forwarded, and the user explicitly requested no decomposition.
+
+**Task 7 execution and verification (2026-09-03):** Tests were authored first and observed failing
+during collection because all three service modules were absent; strengthened Search schema and batch
+cardinality tests were also observed failing before their fixes. The implementation adds deterministic
+cached-tokenizer chunking with an explicitly tested no-download fallback, local section/page/slide/image
+boundaries and overlap; a token-only fixed-deployment embedding adapter with bounded batches, input and
+request token caps, strict 3,072-dimensional response validation, safe retry handling, and ownership-
+aware closure; and an Azure AI Search SDK adapter with the checked-in exact schema, complete per-key
+batch validation, server-built escaped filters, paged key deletion, hybrid semantic retrieval, normalized
+evidence, readiness, and resource ownership. Production API and cleanup composition now constructs this
+real Search adapter with the shared `DefaultAzureCredential`, supplies it to deletion, and closes it.
+Locked offline sync succeeded, 41 focused/integration tests passed, Ruff reported no findings, strict
+mypy reported no issues across 32 application modules, the full backend suite passed with 619 tests,
+and `git diff --check` passed. No worker, RAG API, live Azure call, key authentication, or dependency
+change was introduced.
+
 **Files:**
 - Create: `backend/app/services/chunking.py`
 - Create: `backend/app/services/embeddings.py`
@@ -837,7 +876,7 @@ git commit -m "feat: add mixed document analyzers"
 - Create: `backend/tests/services/test_search_service.py`
 - Create: `scripts/search-index.json`
 
-- [ ] **Step 1: Write failing chunk boundary tests**
+- [x] **Step 1: Write failing chunk boundary tests**
 
 ```python
 def test_chunks_preserve_heading_and_page_locator() -> None:
@@ -849,19 +888,19 @@ def test_chunks_preserve_heading_and_page_locator() -> None:
     assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
 ```
 
-- [ ] **Step 2: Implement deterministic Markdown chunking**
+- [x] **Step 2: Implement deterministic Markdown chunking**
 
 Split by heading/page markers, then sentence/paragraph boundaries, then token windows only as a fallback. Derive `chunkId` as URL-safe Base64 SHA-256 of `documentId:ordinal:contentHash`. Include a 120-token overlap without crossing unrelated sections.
 
-- [ ] **Step 3: Implement embeddings with strict dimensions**
+- [x] **Step 3: Implement embeddings with strict dimensions**
 
 Batch up to 64 chunks and stay under model input limits. Use Microsoft Entra token auth. Reject responses whose vector length is not 3,072. Add retry-after-aware retry behavior and release-SHA telemetry.
 
-- [ ] **Step 4: Define and test the exact Search index**
+- [x] **Step 4: Define and test the exact Search index**
 
 Create `document-chunks` with all fields in the design, HNSW cosine profile, `contentVector` dimension 3,072, semantic configuration prioritizing title, section path, and content, and disabled local authentication on the service. Tests compare the generated schema to `scripts/search-index.json`.
 
-- [ ] **Step 5: Implement indexing and retrieval**
+- [x] **Step 5: Implement indexing and retrieval**
 
 Use `merge_or_upload_documents` in batches with per-key failure checks. Build filters only from validated server values:
 
@@ -876,7 +915,7 @@ def build_scope_filter(session_key: str, document_ids: tuple[UUID, ...]) -> str:
 
 Hybrid retrieval uses keyword text, `VectorizedQuery(k_nearest_neighbors=50)`, semantic ranker, and returns top eight.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `cd backend && uv run pytest tests/services/test_chunking.py tests/services/test_embeddings.py tests/services/test_search_service.py -q`
 

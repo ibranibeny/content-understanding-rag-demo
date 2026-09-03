@@ -145,10 +145,9 @@ async def test_cleanup_main_never_prints_exception_text(
     assert "SECRET" not in output and "document content" not in output and "https://" not in output
 
 
-async def test_cleanup_without_injected_production_search_fails_closed(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    assert await async_main() == 1
-    output = capsys.readouterr().out
-    assert "RuntimeError" in output
-    assert "ChunkSearch is not configured" not in output
+def test_cleanup_production_factory_no_longer_requires_search_injection() -> None:
+    from inspect import signature
+
+    from app.cleanup import _production_dependencies
+
+    assert list(signature(_production_dependencies).parameters) == ["settings"]

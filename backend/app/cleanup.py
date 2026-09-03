@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.core.config import Settings
-from app.domain.protocols import ChunkSearch
 from app.main import ApplicationDependencies, ProductionDependencies, create_production_dependencies
 from app.services.deletion_service import DeletionService
 
@@ -40,14 +39,8 @@ async def run_cleanup_once(
     )
 
 
-def _production_dependencies(
-    settings: Settings, chunk_search: ChunkSearch | None = None
-) -> ProductionDependencies:
-    if chunk_search is None:
-        raise RuntimeError(
-            "ChunkSearch is not configured; inject the Task 7 Azure AI Search adapter"
-        )
-    dependencies = create_production_dependencies(settings, chunk_search)
+def _production_dependencies(settings: Settings) -> ProductionDependencies:
+    dependencies = create_production_dependencies(settings)
     if not isinstance(dependencies, ProductionDependencies):
         raise TypeError("production dependency factory returned an invalid bundle")
     return dependencies
