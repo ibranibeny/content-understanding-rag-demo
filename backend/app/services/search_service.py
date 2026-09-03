@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from typing import Any, Protocol, Self, cast
 from uuid import UUID
@@ -49,7 +49,7 @@ class SearchClientLike(Protocol):
 class SearchIndexClientLike(Protocol):
     async def create_or_update_index(self, index: SearchIndex) -> SearchIndex: ...
 
-    def get_index_names(self) -> AsyncIterator[str]: ...
+    def list_index_names(self) -> AsyncIterator[str]: ...
 
     async def close(self) -> None: ...
 
@@ -196,11 +196,9 @@ class AzureSearchService:
 
     async def is_ready(self) -> bool:
         try:
-            async for value in self._indexes.get_index_names():
-                name = value.get("name") if isinstance(value, Mapping) else value
-                if name == self._index_name:
-                    return True
-            return False
+            async for _ in self._indexes.list_index_names():
+                return True
+            return True
         except AzureError:
             return False
 

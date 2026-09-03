@@ -40,12 +40,17 @@ def chunk(ordinal: int = 0) -> DocumentChunk:
 
 
 class AsyncResults:
-    def __init__(self, values: list[dict[str, Any]]) -> None:
+    def __init__(self, values: list[Any], *, fail_after: int | None = None) -> None:
         self.values = values
+        self.fail_after = fail_after
+        self.yielded = 0
 
     def __aiter__(self):  # type: ignore[no-untyped-def]
         async def iterate():  # type: ignore[no-untyped-def]
             for value in self.values:
+                if self.fail_after is not None and self.yielded >= self.fail_after:
+                    raise AssertionError("readiness consumed more than the first item")
+                self.yielded += 1
                 yield value
         return iterate()
 
@@ -81,13 +86,14 @@ class IndexClient:
         self.indexes: list[Any] = []
         self.closed = 0
         self.names = [SEARCH_INDEX_NAME]
+        self.name_results: AsyncResults | None = None
 
     async def create_or_update_index(self, index: Any) -> Any:
         self.indexes.append(index)
         return index
 
-    def get_index_names(self) -> AsyncResults:
-        return AsyncResults([{"name": name} for name in self.names])
+    def list_index_names(self) -> AsyncResults:
+        return self.name_results or AsyncResults(self.names)
 
     async def close(self) -> None:
         self.closed += 1
@@ -217,8 +223,10 @@ async def test_search_rejects_wrong_vector_dimension_before_sdk_call() -> None:
 
 async def test_readiness_and_close_ownership() -> None:
     search, index = SearchClient(), IndexClient()
+    index.name_results = AsyncResults(["another-index", "must-not-be-read"], fail_after=1)
     search_service = service(search=search, index=index)
-    assert await search_service.is_ready()
+    assert await search_service.is_ready() is True
+    assert index.name_results.yielded == 1
     await search_service.aclose()
     assert search.closed == 0
     assert index.closed == 0

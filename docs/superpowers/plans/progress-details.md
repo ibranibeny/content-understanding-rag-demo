@@ -273,3 +273,14 @@
 	pytest passed `558 tests`; editor diagnostics and `git diff --check` were clean.
 - Decomposition: atomic Blob-adapter correction. No scenario skill root, Execution-stage file, or
 	Breakdown Hints files were forwarded.
+
+## 2026-09-03 — Task 7 Search readiness API remediation
+
+- Root cause: the Search adapter called nonexistent `get_index_names()` even though the installed
+	async Azure Search SDK exposes `list_index_names()` as an async pageable.
+- TDD/fix: the adapter double now exposes `list_index_names()` and fails if readiness requests a
+	second item. `AzureSearchService.is_ready()` uses the supported API and returns after at most the
+	first item; an empty successful listing is also ready, while Azure failures remain not ready.
+- Verification: 25 focused Task 7 tests and all 619 backend tests passed; Ruff was clean; strict mypy
+	passed its established five-file Task 7 scope; locked offline sync resolved 94 and checked 93 cached
+	packages; `git diff --check` passed and the code/test diff is confined to Search readiness.
