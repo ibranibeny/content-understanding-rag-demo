@@ -186,3 +186,28 @@
 	reported no issues in 21 source files; full backend pytest `357 passed`; `git diff --check` passed.
 - Decomposition: atomic. No scenario skill root, Execution stage, or Breakdown Hints files were
 	supplied; the change is one validation invariant at the existing pre-side-effect boundary.
+
+## 2026-09-03 — Task 5 durable production wiring compliance remediation
+
+- Root causes: the async Azure SDK graph omitted its `aiohttp` transport; the CLI always selected
+	the memory-capable factory; no cleanup command drove durable tombstones; lease acquisition
+	collapsed all Azure errors into busy without retry; and Azurite connection-string wiring existed
+	only for Table Storage.
+- Package-source evidence: an enterprise-feed-only `uv pip install --dry-run` resolved
+	`aiohttp==3.14.3` for Python 3.12/Windows. `uv add --no-sync --index
+	https://packagefeedproxy.microsoft.io/pypi/simple/ 'aiohttp>=3.12,<4'` regenerated the manifest
+	and lock; dependency-policy tests retain the exact sole-index and approved-host checks.
+- TDD red: the first focused run failed collection for missing local/production factories and
+	cleanup module. Lease, factory, dependency, and cleanup regressions then drove implementation;
+	the final resource-close regression failed `1 failed, 7 passed` because the first close error
+	prevented later resources from closing.
+- Fix: added explicit production and Azurite factories/CLI selection, shared Table/Blob/Queue
+	development-storage wiring with distinct configured containers/queues, the bounded cleanup
+	command, five-attempt capped exponential secure jitter for retryable lease conflicts only,
+	explicit camel-case queue serialization, and all-resource close attempts preserving the first
+	error. Production continues to reject memory and Azurite adapters.
+- Final verification: focused compliance tests passed; full backend pytest `550 passed`; Ruff
+	passed; strict mypy reported no issues in 28 source files; `uv sync --locked --offline` resolved
+	94 and checked 93 packages; editor diagnostics and `git diff --check` were clean. Docker was not
+	installed, so compose runtime/config validation was skipped under the permitted availability
+	condition.

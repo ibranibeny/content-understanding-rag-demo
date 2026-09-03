@@ -1,12 +1,16 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
+from azure.storage.blob.aio import BlobServiceClient
+from azure.storage.queue.aio import QueueClient
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
@@ -39,12 +43,12 @@ from app.repositories.memory_repository import (
     MemorySessionRepository,
     MemoryWorkQueue,
 )
-from app.repositories.table_repository import TableApplicationRepository
-from app.services.blob_service import AzureBlobStore
+from app.repositories.table_repository import TableApplicationRepository, TableClientLike
+from app.services.blob_service import AzureBlobStore, BlobServiceClientLike
 from app.services.deletion_service import DeletionService
 from app.services.document_service import DocumentService
 from app.services.outbox_service import OutboxDispatcher
-from app.services.queue_service import AzureWorkQueue
+from app.services.queue_service import AzureWorkQueue, QueueClientLike
 from app.services.session_service import SessionService, SystemClock
 from app.services.upload_service import UploadService
 
@@ -100,16 +104,39 @@ class ProductionDependencies(ApplicationDependencies):
     credential: AsyncTokenCredential
 
     async def aclose(self) -> None:
-        await self.application_repository.aclose()
-        await self.work_queue.aclose()
-        await self.blob_store.aclose()
-        await self.credential.close()
+        results = await asyncio.gather(
+            self.application_repository.aclose(),
+            self.work_queue.aclose(),
+            self.blob_store.aclose(),
+            self.credential.close(),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+
+@dataclass(frozen=True, slots=True)
+class LocalDependencies(ApplicationDependencies):
+    application_repository: CloseableApplicationRepository
+    work_queue: CloseableApplicationWorkQueue
+
+    async def aclose(self) -> None:
+        results = await asyncio.gather(
+            self.application_repository.aclose(),
+            self.work_queue.aclose(),
+            self.blob_store.aclose(),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
 
 def create_production_dependencies(
     settings: Settings,
-    chunk_search: ChunkSearch,
-    readiness_checks: Mapping[str, ReadinessCheck],
+    chunk_search: ChunkSearch | None = None,
+    readiness_checks: Mapping[str, ReadinessCheck] | None = None,
     *,
     credential: AsyncTokenCredential | None = None,
     repository_factory: Callable[
@@ -155,8 +182,10 @@ def create_production_dependencies(
         application_repository=repository,
         work_queue=queue,
         blob_store=blobs,
-        chunk_search=chunk_search,
-        readiness_checks=readiness_checks,
+        chunk_search=chunk_search or _EmptyChunkSearch(),
+        readiness_checks=readiness_checks or {
+            name: _not_ready for name in PRODUCTION_READINESS_CHECKS
+        },
         credential=actual_credential,
     )
 
@@ -181,6 +210,50 @@ class _EmptyChunkSearch:
     ) -> list[RetrievedEvidence]:
         del session_key, query, vector, document_ids
         return []
+
+
+def create_local_dependencies(
+    settings: Settings,
+    *,
+    chunk_search: ChunkSearch | None = None,
+) -> LocalDependencies:
+    connection_string = settings.azurite_table_connection_string
+    if settings.app_mode == "production":
+        raise ValueError("production must not use Azurite dependencies")
+    if not connection_string:
+        raise ValueError("AZURITE_TABLE_CONNECTION_STRING is required")
+    table_client = TableClient.from_connection_string(connection_string, settings.table_name)
+    blob_client = BlobServiceClient.from_connection_string(connection_string)
+    ingestion = QueueClient.from_connection_string(
+        connection_string, settings.ingestion_queue
+    )
+    cleanup = QueueClient.from_connection_string(
+        connection_string, settings.content_result_cleanup_queue
+    )
+    repository = TableApplicationRepository(
+        cast(TableClientLike, table_client), owns_client=True
+    )
+    queue = AzureWorkQueue(
+        cast(QueueClientLike, ingestion),
+        cast(QueueClientLike, cleanup),
+        owns_clients=True,
+    )
+    blobs = AzureBlobStore(
+        settings.storage_account_name,
+        settings.uploads_container,
+        SystemClock(),
+        derived_container=settings.derived_container,
+        control_container=settings.control_container,
+        service_client=cast(BlobServiceClientLike, blob_client),
+        own_service_client=True,
+    )
+    return LocalDependencies(
+        application_repository=repository,
+        work_queue=queue,
+        blob_store=blobs,
+        chunk_search=chunk_search or _EmptyChunkSearch(),
+        readiness_checks={"configuration": _ready},
+    )
 
 
 def create_app(
@@ -313,7 +386,7 @@ def create_app(
                     await task
             if owned_blob_store is not None:
                 await actual_upload_service.aclose()
-            if isinstance(dependencies, ProductionDependencies):
+            if isinstance(dependencies, (ProductionDependencies, LocalDependencies)):
                 await dependencies.aclose()
 
     app = FastAPI(
@@ -356,7 +429,32 @@ def create_app(
     return app
 
 
+def create_production_app() -> FastAPI:
+    settings = Settings()
+    if settings.app_mode != "production":
+        raise ValueError("production app factory requires APP_MODE=production")
+    dependencies = create_production_dependencies(settings)
+    try:
+        return create_app(settings=settings, dependencies=dependencies)
+    except BaseException:
+        asyncio.run(cast(ProductionDependencies, dependencies).aclose())
+        raise
+
+
+def create_local_app() -> FastAPI:
+    settings = Settings()
+    dependencies = create_local_dependencies(settings)
+    return create_app(settings=settings, dependencies=dependencies)
+
+
 def run() -> None:
     import uvicorn
 
-    uvicorn.run("app.main:create_app", factory=True, host="0.0.0.0", port=8000)
+    mode = os.getenv("APP_MODE", "local")
+    if mode == "production":
+        factory = "app.main:create_production_app"
+    elif os.getenv("AZURITE_TABLE_CONNECTION_STRING"):
+        factory = "app.main:create_local_app"
+    else:
+        factory = "app.main:create_app"
+    uvicorn.run(factory, factory=True, host="0.0.0.0", port=8000)

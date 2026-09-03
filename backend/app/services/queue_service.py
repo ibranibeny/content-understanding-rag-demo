@@ -52,10 +52,10 @@ class AzureWorkQueue:
         )
 
     async def enqueue_ingestion(self, message: IngestionMessage) -> None:
-        await self._ingestion.send_message(message.model_dump_json())
+        await self._ingestion.send_message(message.model_dump_json(by_alias=True))
 
     async def enqueue_result_cleanup(self, message: ContentResultCleanupMessage) -> None:
-        await self._cleanup.send_message(message.model_dump_json())
+        await self._cleanup.send_message(message.model_dump_json(by_alias=True))
 
     async def get_ingestion_backlog(self) -> int:
         properties = await self._ingestion.get_queue_properties()

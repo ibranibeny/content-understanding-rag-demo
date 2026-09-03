@@ -94,6 +94,20 @@ def test_python_dependencies_use_only_the_enterprise_feed() -> None:
     assert_enterprise_feed_only(pyproject, lockfile)
 
 
+def test_async_azure_transport_is_an_explicit_locked_dependency() -> None:
+    pyproject, lockfile = _load_dependency_documents()
+    project = _mapping(pyproject.get("project"), "project")
+    dependencies = project.get("dependencies")
+    assert isinstance(dependencies, list)
+    assert "aiohttp>=3.12,<4" in dependencies
+    packages = lockfile.get("package")
+    assert isinstance(packages, list)
+    assert any(
+        isinstance(package, Mapping) and package.get("name") == "aiohttp"
+        for package in packages
+    )
+
+
 def test_dependency_policy_rejects_an_unknown_public_mirror() -> None:
     pyproject, lockfile = _load_dependency_documents()
     mutated_lockfile = copy.deepcopy(lockfile)

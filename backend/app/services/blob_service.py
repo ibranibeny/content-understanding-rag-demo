@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -29,6 +30,10 @@ HEADER_BYTES = 16
 OFFICE_SPOOL_MEMORY_BYTES = 4 * 1024 * 1024
 LEASE_DURATION_SECONDS = 60
 LEASE_RENEW_INTERVAL_SECONDS = 30.0
+LEASE_ACQUIRE_ATTEMPTS = 5
+LEASE_RETRY_BASE_SECONDS = 0.1
+LEASE_RETRY_CAP_SECONDS = 2.0
+SECURE_RANDOM = secrets.SystemRandom()
 
 
 class DocumentLeaseBusy(Exception):
@@ -99,6 +104,8 @@ VerifiedUpload = VerifiedBlobUpload
 SasFactory = Callable[..., str]
 SpoolFactory = Callable[..., Any]
 LeaseFactory = Callable[[BlobClientLike], LeaseClientLike]
+Sleep = Callable[[float], object]
+Random = Callable[[], float]
 
 
 def _azure_lease_factory(blob: BlobClientLike) -> LeaseClientLike:
@@ -123,6 +130,11 @@ class AzureBlobStore:
         office_concurrency: int = 2,
         lease_factory: LeaseFactory = _azure_lease_factory,
         lease_renew_interval: float = LEASE_RENEW_INTERVAL_SECONDS,
+        lease_attempts: int = LEASE_ACQUIRE_ATTEMPTS,
+        lease_retry_base: float = LEASE_RETRY_BASE_SECONDS,
+        lease_retry_cap: float = LEASE_RETRY_CAP_SECONDS,
+        lease_sleep: Callable[[float], Any] = asyncio.sleep,
+        lease_random: Random = SECURE_RANDOM.random,
         own_credential: bool = False,
         own_service_client: bool = False,
     ) -> None:
@@ -138,6 +150,11 @@ class AzureBlobStore:
         self._office_semaphore = asyncio.Semaphore(office_concurrency)
         self._lease_factory = lease_factory
         self._lease_renew_interval = lease_renew_interval
+        self._lease_attempts = lease_attempts
+        self._lease_retry_base = lease_retry_base
+        self._lease_retry_cap = lease_retry_cap
+        self._lease_sleep = lease_sleep
+        self._lease_random = lease_random
         self._owns_credential = own_credential
         self._owns_service_client = own_service_client
         self._service_client_closed = False
@@ -349,14 +366,20 @@ class AzureBlobStore:
         except ResourceExistsError:
             pass
         except AzureError:
-            raise DocumentLeaseBusy from None
+            raise
         lease_client = self._lease_factory(control)
-        try:
-            await lease_client.acquire(lease_duration=LEASE_DURATION_SECONDS)
-        except (ResourceExistsError, ResourceModifiedError):
-            raise DocumentLeaseBusy from None
-        except AzureError:
-            raise DocumentLeaseBusy from None
+        for attempt in range(self._lease_attempts):
+            try:
+                await lease_client.acquire(lease_duration=LEASE_DURATION_SECONDS)
+                break
+            except (ResourceExistsError, ResourceModifiedError):
+                if attempt + 1 == self._lease_attempts:
+                    raise DocumentLeaseBusy from None
+                exponential = self._lease_retry_base * (2**attempt)
+                jittered = exponential * (1.0 + self._lease_random())
+                await self._lease_sleep(min(self._lease_retry_cap, jittered))
+        else:
+            raise DocumentLeaseBusy
         lease = RenewableDocumentLease(lease_client)
         stopped = asyncio.Event()
         renew_task = asyncio.create_task(self._renew_lease(lease, stopped))

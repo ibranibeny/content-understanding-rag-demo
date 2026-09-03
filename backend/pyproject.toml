@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Workshop API for the Content Understanding RAG demo"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "aiohttp>=3.12,<4",
     "anyio==4.14.1",
     "azure-data-tables>=12.7.0",
     "azure-identity>=1.25.0",
@@ -38,6 +39,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[[tool.uv.index]]
+name = "microsoft-enterprise"
+url = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+default = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
@@ -53,8 +59,3 @@ line-length = 100
 [tool.mypy]
 python_version = "3.12"
 strict = true
-
-[[tool.uv.index]]
-name = "microsoft-enterprise"
-url = "https://packagefeedproxy.microsoft.io/pypi/simple/"
-default = true

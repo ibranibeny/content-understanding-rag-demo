@@ -479,6 +479,17 @@ class LeaseClient:
             await self.release_continue.wait()
 
 
+class SequencedLeaseClient(LeaseClient):
+    def __init__(self, errors: list[Exception]) -> None:
+        super().__init__()
+        self.errors = errors
+
+    async def acquire(self, *, lease_duration: int) -> None:
+        self.acquire_calls.append(lease_duration)
+        if self.errors:
+            raise self.errors.pop(0)
+
+
 class PrefixService(BlobService):
     def __init__(self, control: LeaseBlob, names: list[str]) -> None:
         super().__init__(control)
@@ -574,6 +585,99 @@ async def test_control_blob_already_existing_is_safe_and_busy_lease_is_typed() -
     with pytest.raises(DocumentLeaseBusy):
         async with store.acquire_document_lease("a" * 64, UUID(int=1)):
             raise AssertionError("unreachable")
+
+
+async def test_busy_lease_retries_with_bounded_exponential_jitter() -> None:
+    lease_client = SequencedLeaseClient([
+        ResourceModifiedError("busy"),
+        ResourceExistsError("busy"),
+    ])
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(LeaseBlob(), []),
+        lease_factory=lambda blob: lease_client, lease_sleep=sleep,
+        lease_random=lambda: 0.5, lease_retry_base=0.1, lease_retry_cap=0.25,
+    )
+
+    async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+        pass
+
+    assert lease_client.acquire_calls == [60, 60, 60]
+    assert delays == pytest.approx([0.15, 0.25])
+
+
+async def test_busy_lease_stops_after_configured_attempts() -> None:
+    lease_client = SequencedLeaseClient([ResourceModifiedError("busy")] * 5)
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(LeaseBlob(), []),
+        lease_factory=lambda blob: lease_client, lease_sleep=sleep,
+        lease_random=lambda: 0.0, lease_retry_base=0.01,
+    )
+
+    with pytest.raises(DocumentLeaseBusy):
+        async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+            raise AssertionError("unreachable")
+    assert len(lease_client.acquire_calls) == 5
+    assert len(delays) == 4
+
+
+async def test_nonretryable_lease_error_fails_immediately_without_sleep() -> None:
+    lease_client = SequencedLeaseClient([AzureError("authentication failed")])
+    sleep_calls = 0
+
+    async def sleep(delay: float) -> None:
+        nonlocal sleep_calls
+        del delay
+        sleep_calls += 1
+
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(LeaseBlob(), []),
+        lease_factory=lambda blob: lease_client, lease_sleep=sleep,
+    )
+
+    with pytest.raises(AzureError, match="authentication"):
+        async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+            raise AssertionError("unreachable")
+    assert lease_client.acquire_calls == [60]
+    assert sleep_calls == 0
+
+
+async def test_successful_lease_and_cancelled_retry_never_add_extra_attempts() -> None:
+    successful = SequencedLeaseClient([])
+    sleep_calls = 0
+
+    async def unexpected_sleep(delay: float) -> None:
+        nonlocal sleep_calls
+        del delay
+        sleep_calls += 1
+
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(LeaseBlob(), []),
+        lease_factory=lambda blob: successful, lease_sleep=unexpected_sleep,
+    )
+    async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+        pass
+    assert successful.acquire_calls == [60]
+    assert sleep_calls == 0
+
+    cancelled = SequencedLeaseClient([asyncio.CancelledError()])
+    cancelled_store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(LeaseBlob(), []),
+        lease_factory=lambda blob: cancelled, lease_sleep=unexpected_sleep,
+    )
+    with pytest.raises(asyncio.CancelledError):
+        async with cancelled_store.acquire_document_lease("a" * 64, UUID(int=1)):
+            raise AssertionError("unreachable")
+    assert cancelled.acquire_calls == [60]
 
 
 async def test_renewal_loss_is_observable_and_still_releases() -> None:

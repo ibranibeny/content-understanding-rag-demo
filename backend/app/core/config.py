@@ -228,7 +228,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_frontend_origin(self) -> "Settings":
         if self.app_mode == "production" and self.azurite_table_connection_string:
-            raise ValueError("production must not use a Table connection string")
+            raise ValueError("production must not use an Azurite connection string")
         if self.app_mode == "production" and self.frontend_origin == "http://testserver":
             raise ValueError("production frontend origin must be configured")
         self.frontend_origin = validate_origin(

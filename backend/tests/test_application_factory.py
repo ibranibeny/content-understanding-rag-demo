@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.domain.models import DocumentChunk, RetrievedEvidence
-from app.main import ApplicationDependencies, create_app, create_production_dependencies
+from app.main import (
+    ApplicationDependencies,
+    create_app,
+    create_production_app,
+    create_production_dependencies,
+    run,
+)
 from app.repositories.memory_repository import MemoryApplicationRepository, MemoryWorkQueue
 from app.repositories.table_repository import TableApplicationRepository
 from app.services.blob_service import AzureBlobStore
@@ -75,6 +81,9 @@ class DurableRepository:
         self.sessions = self.backing.sessions
         self.documents = self.backing.documents
 
+    async def aclose(self) -> None:
+        return None
+
 
 def production_settings() -> Settings:
     return Settings(app_mode="production", frontend_origin="https://frontend.example.com")
@@ -87,7 +96,7 @@ def test_production_rejects_omitted_dependency_bundle_instead_of_using_memory() 
 
 def test_production_wires_one_explicit_dependency_bundle_without_memory_defaults() -> None:
     repository = DurableRepository()
-    queue = AzureWorkQueue(QueueClient(), QueueClient())
+    queue = AzureWorkQueue(QueueClient(), QueueClient(), owns_clients=True)
     blobs = Blobs()
     search = Search()
     dependencies = ApplicationDependencies(
@@ -196,3 +205,109 @@ def test_production_helper_constructs_table_queue_and_three_container_blob_graph
     with TestClient(create_app(settings=settings, dependencies=dependencies)):
         pass
     assert credential.close_calls == 1
+
+
+def test_production_factory_loads_settings_builds_dependencies_and_closes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = Credential()
+    repository = DurableRepository()
+    queue = AzureWorkQueue(QueueClient(), QueueClient())
+    blobs = Blobs()
+    dependencies = create_production_dependencies(
+        production_settings(), Search(),
+        {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
+        credential=credential,  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
+        queue_factory=lambda settings, credential: queue,
+        blob_factory=lambda settings, credential: blobs,
+    )
+    monkeypatch.setenv("APP_MODE", "production")
+    monkeypatch.setenv("FRONTEND_ORIGIN", "https://frontend.example.com")
+    monkeypatch.setattr("app.main.create_production_dependencies", lambda settings: dependencies)
+
+    app = create_production_app()
+    assert app.state.document_repository is repository.documents
+    with TestClient(app):
+        pass
+    assert credential.close_calls == 1
+    assert blobs.closed == 1
+
+
+def test_production_factory_closes_dependencies_once_when_app_construction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = Credential()
+    repository = DurableRepository()
+    queue = AzureWorkQueue(QueueClient(), QueueClient(), owns_clients=True)
+    blobs = Blobs()
+    dependencies = create_production_dependencies(
+        production_settings(), Search(),
+        {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
+        credential=credential,  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
+        queue_factory=lambda settings, credential: queue,
+        blob_factory=lambda settings, credential: blobs,
+    )
+    monkeypatch.setenv("APP_MODE", "production")
+    monkeypatch.setenv("FRONTEND_ORIGIN", "https://frontend.example.com")
+    monkeypatch.setattr("app.main.create_production_dependencies", lambda settings: dependencies)
+    monkeypatch.setattr(
+        "app.main.create_app",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("construction failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="construction failed"):
+        create_production_app()
+    assert credential.close_calls == 1
+    assert blobs.closed == 1
+
+
+async def test_production_close_attempts_every_resource_when_one_close_fails() -> None:
+    closed: list[str] = []
+
+    class FailingRepository(DurableRepository):
+        async def aclose(self) -> None:
+            closed.append("repository")
+            raise RuntimeError("repository close failed")
+
+    class ClosingQueue(AzureWorkQueue):
+        async def aclose(self) -> None:
+            closed.append("queue")
+
+    class ClosingBlobs(Blobs):
+        async def aclose(self) -> None:
+            closed.append("blobs")
+
+    class ClosingCredential(Credential):
+        async def close(self) -> None:
+            closed.append("credential")
+
+    dependencies = create_production_dependencies(
+        production_settings(), Search(),
+        {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
+        credential=ClosingCredential(),  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: FailingRepository(),  # type: ignore[arg-type]
+        queue_factory=lambda settings, credential: ClosingQueue(QueueClient(), QueueClient()),
+        blob_factory=lambda settings, credential: ClosingBlobs(),
+    )
+
+    with pytest.raises(RuntimeError, match="repository close failed"):
+        await dependencies.aclose()  # type: ignore[attr-defined]
+    assert set(closed) == {"repository", "queue", "blobs", "credential"}
+
+
+def test_cli_selects_production_or_explicit_azurite_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: calls.append({"args": args, **kwargs}))
+
+    monkeypatch.setenv("APP_MODE", "production")
+    run()
+    assert calls[-1]["args"] == ("app.main:create_production_app",)
+
+    monkeypatch.setenv("APP_MODE", "local")
+    monkeypatch.setenv("AZURITE_TABLE_CONNECTION_STRING", "UseDevelopmentStorage=true")
+    run()
+    assert calls[-1]["args"] == ("app.main:create_local_app",)
