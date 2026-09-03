@@ -10,6 +10,10 @@ from starlette.responses import Response
 CORRELATION_HEADER = "X-Correlation-ID"
 
 
+class ConcurrencyConflict(Exception):
+    """A repository write was rejected because its ETag was stale."""
+
+
 @dataclass(frozen=True, slots=True)
 class AppError(Exception):
     code: str

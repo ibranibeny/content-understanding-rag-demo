@@ -90,3 +90,28 @@
 - TDD green and final verification: focused configuration tests `103 passed`; Ruff passed; strict
 	mypy reported no issues in 11 source files; full backend suite `222 passed`; `git diff --check`
 	passed; editor diagnostics reported no errors in the modified Python files.
+
+## 2026-09-03 — Task 3 anonymous sessions and quotas
+
+- Scope: added the process-local ETag session repository, anonymous token issue/resolve service,
+	document and rolling-question quota operations, session endpoint, and application-factory
+	dependency injection. Upload and Azure Table implementations remain untouched.
+- TDD red: the initial focused collection failed with the expected two missing-feature errors
+	(`ConcurrencyConflict` import and `app.repositories` module). The first green attempt then exposed
+	four fixture/configuration gaps while 23 tests passed. A dedicated production-cookie regression
+	subsequently failed because production mode inherited the local insecure default.
+- Implementation: raw cookies are canonical unpadded URL-safe encodings of exactly 32 random bytes;
+	only lowercase SHA-256 keys are persisted. Missing, malformed, short, unknown, and expired cookies
+	rotate. Frozen records, opaque ETags, five-attempt optimistic retries, strict over-release errors,
+	and a rolling window that excludes timestamps exactly one hour old enforce quotas.
+- API: `GET /api/session` uses app-state dependency injection, returns only the existing explicit
+	camel-case quota DTO, sets cookies only on issue/rotation, permits local insecure cookies, and
+	forces Secure in production while retaining HttpOnly, SameSite=strict, Path=/, and Max-Age=86400.
+- TDD green: focused Task 3 tests passed with 27 tests before the production regression; the complete
+	suite passed with 250 tests after the Secure production fix.
+- Final verification: `uv sync --locked --offline` resolved 89 and checked 88 cached packages; Ruff
+	passed; strict mypy reported no issues in 16 source files; full pytest passed `250 passed`; editor
+	diagnostics reported no errors in the five checked implementation/test files; `git diff --check`
+	passed.
+- Decomposition: atomic. No scenario skill root, Execution stage, or Breakdown Hints files were
+	supplied; the repository, service, and route form one session-isolation boundary.

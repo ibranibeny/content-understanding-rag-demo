@@ -385,6 +385,21 @@ git commit -m "feat: define backend domain contracts"
 
 ### Task 3: Implement anonymous sessions and quotas
 
+**Execution research (2026-09-03):** Task 2 already supplies frozen `SessionRecord` and
+`SessionResponse` models, a narrow async `SessionRepository` protocol, strict UTC validation,
+bounded quota/lifetime settings, stable `AppError` handling, and an application factory with
+typed state for settings/readiness. `SessionRecord.question_timestamps` is already an immutable
+UTC tuple. Task 3 therefore adds one in-memory protocol adapter, one service, and one route, while
+extending only the shared error module with a repository-level concurrency signal. The service
+will derive repository keys exclusively from decoded 32-byte cookie tokens, retain timestamps
+strictly newer than `now - 1 hour` (an event exactly on the boundary is expired), reject document
+over-release predictably, retry ETag conflicts at most five times, and expose quota state through
+the existing camel-case DTO. `create_app` will accept an injected service or construct an isolated
+in-memory service and store it on `app.state`; no global repository is introduced. The task is one
+coherent security boundary whose repository, service, and endpoint are validated together, so it
+is atomic. No modernization scenario skill root, Execution stage, or Breakdown Hints files were
+supplied.
+
 **Files:**
 - Create: `backend/app/repositories/memory_repository.py`
 - Create: `backend/app/services/session_service.py`

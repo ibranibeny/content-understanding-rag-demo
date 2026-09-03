@@ -3,10 +3,13 @@ from collections.abc import Mapping
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.session import router as session_router
 from app.core.config import Settings
 from app.core.errors import AppError, app_error_handler, correlation_middleware
 from app.core.readiness import ReadinessRegistry
 from app.domain.protocols import ReadinessCheck
+from app.repositories.memory_repository import MemorySessionRepository
+from app.services.session_service import SessionService
 
 PRODUCTION_READINESS_CHECKS = frozenset({"blob", "queue", "table", "search", "foundry"})
 
@@ -22,9 +25,13 @@ async def _not_ready() -> bool:
 def create_app(
     settings: Settings | None = None,
     readiness_checks: Mapping[str, ReadinessCheck] | None = None,
+    session_service: SessionService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Content Understanding RAG Demo", version="0.1.0")
     app.state.settings = settings or Settings()
+    app.state.session_service = session_service or SessionService(
+        MemorySessionRepository(), settings=app.state.settings
+    )
 
     if readiness_checks is None:
         if app.state.settings.app_mode == "production":
@@ -45,6 +52,7 @@ def create_app(
     app.middleware("http")(correlation_middleware)
     app.add_exception_handler(AppError, app_error_handler)
     app.include_router(health_router)
+    app.include_router(session_router)
     return app
 
 
