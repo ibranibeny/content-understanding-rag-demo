@@ -408,7 +408,7 @@ supplied.
 - Create: `backend/tests/api/test_session_api.py`
 - Modify: `backend/app/main.py`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 ```python
 async def test_new_session_hashes_token_and_expires_in_24_hours() -> None:
@@ -426,27 +426,27 @@ async def test_question_quota_rejects_31st_question() -> None:
         await service.reserve_question(record.session_key)
 ```
 
-- [ ] **Step 2: Verify tests fail**
+- [x] **Step 2: Verify tests fail**
 
 Run: `cd backend && uv run pytest tests/services/test_session_service.py -q`
 
 Expected: FAIL because session service/repository do not exist.
 
-- [ ] **Step 3: Implement session service**
+- [x] **Step 3: Implement session service**
 
 Generate tokens with `secrets.token_bytes(32)`, hash with SHA-256, use UTC timestamps, maintain a rolling one-hour list/count for questions, and enforce five documents, 500 MB, and 30 questions/hour with ETag retries. Store only the hash.
 
-- [ ] **Step 4: Add the session endpoint and cookie policy**
+- [x] **Step 4: Add the session endpoint and cookie policy**
 
 `GET /api/session` creates or reads `cu_session`. In deployed mode set `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, and `Max-Age=86400`. Return only expiry and quota usage; never return token/hash.
 
-- [ ] **Step 5: Verify API behavior**
+- [x] **Step 5: Verify API behavior**
 
 Run: `cd backend && uv run pytest tests/services/test_session_service.py tests/api/test_session_api.py -q`
 
 Expected: cookie has all required flags; repeat request reuses the session; invalid/expired cookie rotates to a new session.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app backend/tests
