@@ -1,14 +1,48 @@
+import ipaddress
+import re
 from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BeforeValidator, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+def _normalize_dns_hostname(hostname: str) -> str:
+    try:
+        ascii_hostname = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError("service endpoint hostname has invalid IDNA") from exc
+
+    if len(ascii_hostname) > 253:
+        raise ValueError("service endpoint hostname is too long")
+
+    labels = ascii_hostname.split(".")
+    if any(not label or DNS_LABEL_PATTERN.fullmatch(label) is None for label in labels):
+        raise ValueError("service endpoint hostname has an invalid DNS label")
+
+    for label in labels:
+        if label.startswith("xn--"):
+            try:
+                decoded = label.encode("ascii").decode("idna")
+                canonical = decoded.encode("idna").decode("ascii").lower()
+            except UnicodeError as exc:
+                raise ValueError("service endpoint hostname has invalid IDNA") from exc
+            if canonical != label:
+                raise ValueError("service endpoint hostname has invalid IDNA")
+
+    return ascii_hostname
+
 
 def validate_https_endpoint(value: object) -> str:
     """Validate and normalize a root HTTPS service endpoint."""
     if not isinstance(value, str) or not value:
         raise ValueError("service endpoint must be a nonempty string")
+    if not value.startswith("https://"):
+        raise ValueError("service endpoint must use the exact https scheme")
+    if any(character == "\\" or character.isspace() or ord(character) < 32 for character in value):
+        raise ValueError("service endpoint contains an unsafe character")
 
     try:
         endpoint = urlsplit(value)
@@ -21,12 +55,22 @@ def validate_https_endpoint(value: object) -> str:
         raise ValueError("service endpoint must be an absolute HTTPS URL")
     if endpoint.username is not None or endpoint.password is not None:
         raise ValueError("service endpoint must not contain credentials")
+    if endpoint.netloc.endswith(":"):
+        raise ValueError("service endpoint port is malformed")
+    if port is not None and port < 1:
+        raise ValueError("service endpoint port must be between 1 and 65535")
     if endpoint.query or endpoint.fragment:
         raise ValueError("service endpoint must not contain a query or fragment")
     if endpoint.path not in ("", "/"):
         raise ValueError("service endpoint must be a root URL")
 
-    normalized_host = f"[{hostname}]" if ":" in hostname else hostname
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        normalized_host = _normalize_dns_hostname(hostname)
+    else:
+        normalized_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+
     netloc = f"{normalized_host}:{port}" if port is not None else normalized_host
     return urlunsplit(("https", netloc, "", "", ""))
 

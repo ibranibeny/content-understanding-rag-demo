@@ -77,9 +77,26 @@ def test_settings_reject_values_above_workshop_contract_maxima(field: str, value
     "value",
     [
         "http://example.services.ai.azure.com",
+        "HTTPS://example.services.ai.azure.com",
         "https://user:password@example.services.ai.azure.com",
         "not-a-url",
         "https:///missing-host",
+        "https://%",
+        "https://.",
+        "https://example.com\\evil",
+        "https://example..com",
+        "https://-example.com",
+        "https://example-.com",
+        "https://\u200d.example",
+        f"https://{'a' * 64}.example",
+        f"https://{'a.' * 126}a.example",
+        "https://example.com:0",
+        "https://example.com:",
+        "https://example.com:65536",
+        "https://example.com\t",
+        "https://example.com\n",
+        "https://example.com\x7f",
+        "https://example.com ",
         "https://example.services.ai.azure.com?api-version=1",
         "https://example.services.ai.azure.com#fragment",
         "https://example.services.ai.azure.com/service-path",
@@ -96,3 +113,20 @@ def test_settings_normalize_azure_service_endpoint_trailing_slash(field: str) ->
     settings = Settings.model_validate({field: "https://example.services.ai.azure.com/"})
 
     assert getattr(settings, field) == "https://example.services.ai.azure.com"
+
+
+@pytest.mark.parametrize(
+    ("value", "normalized"),
+    [
+        ("https://EXAMPLE.com:443/", "https://example.com:443"),
+        ("https://127.0.0.1/", "https://127.0.0.1"),
+        ("https://[2001:db8::1]:8443/", "https://[2001:db8::1]:8443"),
+        ("https://b\u00fccher.example/", "https://xn--bcher-kva.example"),
+    ],
+)
+def test_settings_accept_valid_dns_and_ip_endpoint_authorities(
+    value: str, normalized: str
+) -> None:
+    settings = Settings.model_validate({"search_endpoint": value})
+
+    assert settings.search_endpoint == normalized

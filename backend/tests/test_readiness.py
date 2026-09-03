@@ -47,7 +47,7 @@ async def test_registry_total_timeout_does_not_wait_for_probe_cancellation() -> 
     registry.register("search", cancellation_resistant_check)
 
     assert await registry.check() == ["search"]
-    await asyncio.wait_for(cancellation_received.wait(), timeout=timeout_seconds * 10)
+    await asyncio.wait_for(cancellation_received.wait(), timeout=1.0)
     assert not probe_finished.is_set()
 
     release_probe.set()
@@ -68,6 +68,7 @@ async def test_cancelling_registry_check_cleans_up_spawned_probe_tasks() -> None
         probe_started.set()
         try:
             await asyncio.Event().wait()
+            raise AssertionError("unreachable")
         except asyncio.CancelledError:
             cancellation_received.set()
             await release_probe.wait()

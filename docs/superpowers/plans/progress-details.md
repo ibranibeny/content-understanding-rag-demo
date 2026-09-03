@@ -53,3 +53,23 @@
 - TDD green and final verification: focused configuration/readiness tests `53 passed`; Ruff
 	passed; strict mypy reported no issues in 11 source files; full backend suite `159 passed`;
 	`git diff --check` passed; editor diagnostics reported no errors in modified Python files.
+
+## 2026-09-03 — Task 2 final endpoint-authority quality remediation
+
+- Scope: completed strict Search and Foundry HTTPS authority validation and increased only the
+	event-synchronized readiness test wait ceiling from 0.1 seconds to 1.0 second.
+- Root cause: `urlsplit()` exposes malformed host text through `hostname` without validating DNS
+	label syntax or IDNA, strips some raw controls before parsing, and accepts an empty or zero port;
+	the validator trusted those parsed fields as a valid authority.
+- TDD red: focused configuration/readiness tests exposed acceptance of the reported percent,
+	dot-only, and backslash-confused authorities, plus malformed IDNA, empty and overlong labels,
+	leading/trailing hyphens, unsafe whitespace, and zero/empty ports. Out-of-range ports were already
+	rejected by `urlsplit()` and remain covered as a regression.
+- Implementation: raw endpoint syntax is screened before parsing; the exact lowercase HTTPS
+	scheme, credential-free root URL, query/fragment absence, and port range are enforced; IP
+	literals use `ipaddress`; DNS names are IDNA-normalized and checked against label and total-length
+	limits. The validator remains a Pydantic `BeforeValidator` returning `str` and removes a trailing
+	root slash.
+- TDD green and final verification: focused configuration/readiness tests `91 passed`; Ruff
+	passed; strict mypy reported no issues in 17 source files; full backend suite `197 passed`;
+	`git diff --check` passed; editor diagnostics reported no errors in modified Python files.
