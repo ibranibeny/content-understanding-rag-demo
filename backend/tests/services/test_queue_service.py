@@ -2,6 +2,8 @@ import json
 from datetime import UTC, datetime
 from uuid import UUID
 
+from azure.core.exceptions import AzureError
+
 from app.domain.models import ContentResultCleanupMessage, IngestionMessage
 from app.services.queue_service import AzureWorkQueue
 
@@ -68,3 +70,18 @@ async def test_queue_routes_cleanup_separately_and_closes_owned_clients_once() -
     assert ingestion.messages == []
     assert json.loads(cleanup.messages[0]) == message.model_dump(mode="json")
     assert ingestion.close_calls == cleanup.close_calls == 1
+
+
+async def test_queue_readiness_checks_both_queues_and_rejects_service_errors() -> None:
+    ingestion = QueueClient()
+    cleanup = QueueClient()
+    queue = AzureWorkQueue(ingestion, cleanup)
+
+    assert await queue.is_ready() is True
+
+    class FailingQueueClient(QueueClient):
+        async def get_queue_properties(self):  # type: ignore[no-untyped-def]
+            raise AzureError("queue unavailable")
+
+    unavailable = AzureWorkQueue(FailingQueueClient(), QueueClient())
+    assert await unavailable.is_ready() is False

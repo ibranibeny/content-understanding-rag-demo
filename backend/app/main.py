@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from azure.core.credentials_async import AsyncTokenCredential
-from azure.core.exceptions import ResourceExistsError
+from azure.core.exceptions import AzureError, ResourceExistsError
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
@@ -49,11 +49,13 @@ from app.repositories.memory_repository import (
 )
 from app.repositories.table_repository import TableApplicationRepository, TableClientLike
 from app.services.blob_service import AzureBlobStore, BlobServiceClientLike, LocalBlobSasSigner
+from app.services.content_understanding import TOKEN_SCOPE as FOUNDRY_CONTENT_SCOPE
 from app.services.deletion_service import DeletionService
 from app.services.document_service import DocumentService
 from app.services.embeddings import FoundryEmbeddingClient
 from app.services.outbox_service import OutboxDispatcher
 from app.services.queue_service import AzureWorkQueue, QueueClientLike
+from app.services.rag_service import TOKEN_SCOPE as FOUNDRY_CHAT_SCOPE
 from app.services.rag_service import FoundryGPT5Client, RagService
 from app.services.search_service import AzureSearchService
 from app.services.session_service import SessionService, SystemClock
@@ -263,11 +265,25 @@ def create_production_dependencies(
             credential=actual_credential,
         )
     )
-    actual_readiness = dict(readiness_checks) if readiness_checks is not None else {
-        name: _not_ready for name in PRODUCTION_READINESS_CHECKS
-    }
-    if readiness_checks is None:
-        actual_readiness["search"] = search.is_ready
+    async def foundry_ready() -> bool:
+        try:
+            await actual_credential.get_token(FOUNDRY_CONTENT_SCOPE)
+            await actual_credential.get_token(FOUNDRY_CHAT_SCOPE)
+        except AzureError:
+            return False
+        return True
+
+    actual_readiness = (
+        dict(readiness_checks)
+        if readiness_checks is not None
+        else {
+            "blob": cast(Any, blobs).is_ready,
+            "queue": cast(Any, queue).is_ready,
+            "table": cast(Any, repository).is_ready,
+            "search": search.is_ready,
+            "foundry": foundry_ready,
+        }
+    )
     return ProductionDependencies(
         application_repository=repository,
         work_queue=queue,

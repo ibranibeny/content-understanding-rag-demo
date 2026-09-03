@@ -55,15 +55,15 @@ jobs:
       EMBEDDING_DEPLOYMENT: ${{ vars.EMBEDDING_DEPLOYMENT }}
       ANALYZER_ROUTER_ID: ${{ vars.ANALYZER_ROUTER_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Azure login (OIDC, no secrets)
-        uses: azure/login@v2
+        uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           enable-cache: true
       - name: Sync backend (enterprise index from backend/pyproject.toml)

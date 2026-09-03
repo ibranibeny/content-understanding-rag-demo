@@ -1,6 +1,7 @@
 from typing import Any, Protocol, cast
 
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import AzureError
 from azure.storage.queue.aio import QueueClient
 
 from app.core.config import Settings
@@ -60,6 +61,14 @@ class AzureWorkQueue:
     async def get_ingestion_backlog(self) -> int:
         properties = await self._ingestion.get_queue_properties()
         return int(properties.approximate_message_count or 0)
+
+    async def is_ready(self) -> bool:
+        try:
+            await self._ingestion.get_queue_properties()
+            await self._cleanup.get_queue_properties()
+        except AzureError:
+            return False
+        return True
 
     async def aclose(self) -> None:
         if self._owns_clients and not self._closed:

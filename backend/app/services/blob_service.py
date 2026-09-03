@@ -528,6 +528,22 @@ class AzureBlobStore:
         except AzureError:
             raise TransientArtifactError from None
 
+    async def is_ready(self) -> bool:
+        try:
+            for container_name in (
+                self._uploads_container,
+                self._derived_container,
+                self._control_container,
+            ):
+                items = self._client().get_container_client(container_name).list_blobs(
+                    name_starts_with="__readiness__"
+                )
+                async for _ in items:
+                    break
+        except AzureError:
+            return False
+        return True
+
     async def delete_control_blob(self, session_key: str, document_id: UUID) -> None:
         control = self._client().get_blob_client(
             self._control_container, self._control_blob_name(session_key, document_id)

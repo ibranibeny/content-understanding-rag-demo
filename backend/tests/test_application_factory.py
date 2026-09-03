@@ -30,6 +30,13 @@ async def ready() -> bool:
 class Blobs:
     closed = 0
 
+    def __init__(self) -> None:
+        self.readiness_calls = 0
+
+    async def is_ready(self) -> bool:
+        self.readiness_calls += 1
+        return True
+
     async def create_upload(self, blob_name: str, content_type: str) -> Any:
         raise AssertionError("not used")
 
@@ -56,7 +63,11 @@ class Blobs:
 
 
 class Search:
+    def __init__(self) -> None:
+        self.readiness_calls = 0
+
     async def is_ready(self) -> bool:
+        self.readiness_calls += 1
         return True
 
     async def aclose(self) -> None:
@@ -88,6 +99,11 @@ class DurableRepository:
         self.backing = MemoryApplicationRepository()
         self.sessions = self.backing.sessions
         self.documents = self.backing.documents
+        self.readiness_calls = 0
+
+    async def is_ready(self) -> bool:
+        self.readiness_calls += 1
+        return True
 
     async def aclose(self) -> None:
         return None
@@ -152,10 +168,14 @@ def test_production_bundle_rejects_memory_repository_or_queue() -> None:
 
 
 class QueueClient:
+    def __init__(self) -> None:
+        self.properties_calls = 0
+
     async def send_message(self, content: str) -> None:
         del content
 
     async def get_queue_properties(self):  # type: ignore[no-untyped-def]
+        self.properties_calls += 1
         return type("Properties", (), {"approximate_message_count": 0})()
 
     async def close(self) -> None:
@@ -172,6 +192,56 @@ class Credential:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+
+class TokenCredential(Credential):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scopes: list[str] = []
+
+    async def get_token(self, *scopes: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        del kwargs
+        self.scopes.extend(scopes)
+        return type("Token", (), {"token": "managed-identity-token"})()
+
+
+async def test_default_production_readiness_probes_dependencies_without_model_calls() -> None:
+    credential = TokenCredential()
+    repository = DurableRepository()
+    ingestion = QueueClient()
+    cleanup = QueueClient()
+    queue = AzureWorkQueue(ingestion, cleanup, owns_clients=True)
+    blobs = Blobs()
+    search = Search()
+    dependencies = create_production_dependencies(
+        production_settings(),
+        credential=credential,  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: repository,  # type: ignore[arg-type]
+        queue_factory=lambda settings, credential: queue,
+        blob_factory=lambda settings, credential: blobs,
+        search_factory=lambda settings, credential: search,
+    )
+
+    results = {
+        name: await check() for name, check in dependencies.readiness_checks.items()
+    }
+
+    assert results == {
+        "blob": True,
+        "queue": True,
+        "table": True,
+        "search": True,
+        "foundry": True,
+    }
+    assert blobs.readiness_calls == 1
+    assert ingestion.properties_calls == cleanup.properties_calls == 1
+    assert repository.readiness_calls == search.readiness_calls == 1
+    assert set(credential.scopes) == {
+        "https://ai.azure.com/.default",
+        "https://cognitiveservices.azure.com/.default",
+    }
+
+    await dependencies.aclose()  # type: ignore[attr-defined]
 
 
 def test_production_helper_constructs_table_queue_and_three_container_blob_graph() -> None:

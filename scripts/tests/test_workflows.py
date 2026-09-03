@@ -33,6 +33,18 @@ def test_workflow_uses_spaces_not_tabs(name: str) -> None:
     assert "\t" not in _read(name), f"{name} must not contain tab characters"
 
 
+@pytest.mark.parametrize("name", ["ci.yml", "codeql.yml", "deploy.yml"])
+def test_third_party_actions_are_pinned_to_full_commit_shas(name: str) -> None:
+    references = re.findall(r"(?m)^\s*-?\s*uses:\s*([^\s#]+)", _read(name))
+    assert references, f"{name} must use at least one action"
+    for reference in references:
+        action, separator, revision = reference.rpartition("@")
+        assert separator and action, f"invalid action reference in {name}: {reference}"
+        assert re.fullmatch(r"[0-9a-f]{40}", revision), (
+            f"{name} action must be pinned to a full commit SHA: {reference}"
+        )
+
+
 # --- CI -----------------------------------------------------------------------
 def test_ci_triggers_on_pull_request() -> None:
     text = _read("ci.yml")

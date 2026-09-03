@@ -8,7 +8,12 @@ from uuid import UUID
 
 from azure.core import MatchConditions
 from azure.core.credentials_async import AsyncTokenCredential
-from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
+from azure.core.exceptions import (
+    AzureError,
+    ResourceExistsError,
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 from azure.data.tables import TableTransactionError, UpdateMode
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
@@ -187,6 +192,17 @@ class TableApplicationRepository:
         except (ResourceExistsError, ResourceModifiedError, ResourceNotFoundError):
             raise ConcurrencyConflict from None
         return session, _etag(response)
+
+    async def is_ready(self) -> bool:
+        try:
+            await self._client.get_entity(
+                partition_key="__readiness__", row_key="__readiness__"
+            )
+        except ResourceNotFoundError:
+            return True
+        except AzureError:
+            return False
+        return True
 
     async def reserve_and_create(
         self, session_update: SessionRecord, session_etag: str, document: DocumentRecord

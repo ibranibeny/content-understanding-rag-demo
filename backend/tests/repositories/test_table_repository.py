@@ -7,7 +7,12 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
+from azure.core.exceptions import (
+    AzureError,
+    ResourceExistsError,
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 from azure.data.tables import TableTransactionError
 
 from app.core.errors import ConcurrencyConflict, RepositoryDataError
@@ -145,6 +150,19 @@ class FakeTableClient:
 
     async def close(self) -> None:
         self.close_calls += 1
+
+
+async def test_table_readiness_accepts_missing_sentinel_and_rejects_service_errors() -> None:
+    healthy = TableApplicationRepository(FakeTableClient())
+    assert await healthy.is_ready() is True
+
+    class FailingTableClient(FakeTableClient):
+        async def get_entity(self, *, partition_key: str, row_key: str) -> FakeEntity:
+            del partition_key, row_key
+            raise AzureError("table unavailable")
+
+    unavailable = TableApplicationRepository(FailingTableClient())
+    assert await unavailable.is_ready() is False
 
 
 def session(key: str = SESSION_KEY, *, count: int = 1) -> SessionRecord:

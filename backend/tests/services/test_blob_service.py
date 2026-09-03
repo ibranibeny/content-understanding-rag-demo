@@ -118,6 +118,62 @@ class BlobService:
         self.close_calls = getattr(self, "close_calls", 0) + 1
 
 
+class ReadinessContainer:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.prefixes: list[str] = []
+
+    def list_blobs(self, *, name_starts_with: str):  # type: ignore[no-untyped-def]
+        self.prefixes.append(name_starts_with)
+
+        async def values():  # type: ignore[no-untyped-def]
+            if self.error is not None:
+                raise self.error
+            if False:
+                yield None
+
+        return values()
+
+
+class ReadinessBlobService(BlobService):
+    def __init__(self, error_container: str | None = None) -> None:
+        super().__init__(BlobClient())
+        self.containers = {
+            name: ReadinessContainer(
+                AzureError("container unavailable") if name == error_container else None
+            )
+            for name in ("uploads", "derived", "control")
+        }
+
+    def get_container_client(self, container: str) -> ReadinessContainer:
+        return self.containers[container]
+
+
+async def test_blob_readiness_checks_all_required_containers_and_rejects_errors() -> None:
+    service = ReadinessBlobService()
+    store = AzureBlobStore(
+        "acct",
+        "uploads",
+        Clock(),
+        derived_container="derived",
+        control_container="control",
+        service_client=service,
+    )
+
+    assert await store.is_ready() is True
+    assert all(container.prefixes == ["__readiness__"] for container in service.containers.values())
+
+    unavailable = AzureBlobStore(
+        "acct",
+        "uploads",
+        Clock(),
+        derived_container="derived",
+        control_container="control",
+        service_client=ReadinessBlobService(error_container="derived"),
+    )
+    assert await unavailable.is_ready() is False
+
+
 async def test_sas_is_https_one_blob_write_create_only_and_short_lived() -> None:
     captured: dict[str, Any] = {}
 

@@ -154,6 +154,33 @@ async def test_unknown_model_citation_is_dropped() -> None:
         [evidence(DOC_A)], document(DOC_A), model_text="Grounded [S1], invented [S99]."
     )
     events = await collect(service)
+    answer = "".join(event.text for event in events if event.type == "token")
+    assert "[S1]" in answer
+    assert "[S99]" not in answer
+    assert [event.citation.citation_id for event in events if event.type == "citation"] == ["S1"]
+
+
+async def test_citation_validation_handles_markers_split_across_model_deltas() -> None:
+    class SplitModel(Model):
+        async def stream(self, instructions: str, input_text: str) -> AsyncIterator[str]:
+            self.prompts.append((instructions, input_text))
+            for part in ("Grounded [", "S1], invented [S", "99]."):
+                yield part
+
+    repository = MemoryDocumentRepository()
+    await repository.create(document(DOC_A))
+    service = RagService(
+        repository,
+        Embeddings(),
+        Search([evidence(DOC_A)]),
+        SplitModel(),
+        Clock(),
+    )
+
+    events = await collect(service)
+    answer = "".join(event.text for event in events if event.type == "token")
+
+    assert answer == "Grounded [S1], invented ."
     assert [event.citation.citation_id for event in events if event.type == "citation"] == ["S1"]
 
 
