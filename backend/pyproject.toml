@@ -1,0 +1,55 @@
+[project]
+name = "content-understanding-rag-backend"
+version = "0.1.0"
+description = "Workshop API for the Content Understanding RAG demo"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "anyio==4.14.1",
+    "azure-data-tables>=12.7.0",
+    "azure-identity>=1.25.0",
+    "azure-monitor-opentelemetry>=1.8.0",
+    "azure-search-documents>=11.6.0",
+    "azure-storage-blob>=12.27.0",
+    "azure-storage-queue>=12.14.0",
+    "fastapi>=0.118.0",
+    "httpx>=0.28.0",
+    "openai>=2.0.0",
+    "pydantic-settings>=2.11.0",
+    "python-multipart>=0.0.20",
+    "tiktoken>=0.11.0",
+    "uvicorn>=0.37.0",
+]
+
+[project.scripts]
+api = "app.main:run"
+worker = "app.worker:run"
+cleanup = "app.cleanup:run"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18.0",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.2.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.13.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

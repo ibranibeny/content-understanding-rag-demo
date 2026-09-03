@@ -75,6 +75,16 @@
 
 ### Task 1: Bootstrap the monorepo and green health checks
 
+**Execution research (2026-09-03):** The target is a clean linked worktree on
+`feature/content-understanding-rag-demo`; only `.gitignore` and the committed design/plan exist.
+The installed toolchain is Python/uv `0.11.7`, Node.js `24.16.0`, and npm `11.13.0`. The backend
+scope is one FastAPI application factory plus one public liveness router; the frontend scope is one
+React 19/Vite shell with a jsdom Vitest setup. Package registry checks confirmed current React
+`19.2.8`, Vite `8.2.2`, Vitest `4.1.11`, and Playwright `1.62.1`; lockfiles will capture the complete
+resolved dependency graphs. The task is atomic because its two health-shell tests jointly establish
+the single monorepo bootstrap gate and neither introduces a reusable feature boundary. No
+modernization scenario skill root or Breakdown Hints files were supplied for this task.
+
 **Files:**
 - Create: `backend/pyproject.toml`
 - Create: `backend/uv.lock`
