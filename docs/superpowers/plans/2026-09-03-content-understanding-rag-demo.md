@@ -1098,6 +1098,18 @@ user explicitly directed no decomposition. No modernization scenario skill root,
 file, Breakdown Hints, standalone `task.md`, or `progress-details.md` was forwarded; this plan section
 is therefore the execution and append-only progress artifact.
 
+**Blocker follow-up research (2026-09-03):** The installed Azure Monitor distro is 1.8.9 with
+OpenTelemetry SDK 1.43.0. Its `configure_azure_monitor` setup registers caller-supplied
+`span_processors` and `log_record_processors` before its Azure Monitor batch exporters. In this SDK,
+`SpanProcessor._on_ending` receives the mutable SDK `Span` before it ends, while `on_end` receives the
+read-only export view; therefore redaction must run in `_on_ending`, overwriting sensitive values and
+sanitizing URL strings before downstream processors export them. Application logs are enabled via
+`logger_name`, and `LogRecordProcessor.on_emit` receives a mutable `ReadWriteLogRecord`, so the same
+boundary applies to log attributes. The regression test will place an in-memory exporter after the
+redaction processor and assert the exported span itself contains only sanitized attributes, rather
+than merely testing the standalone helper. Scope remains one atomic telemetry-boundary fix; no
+scenario Execution stage or Breakdown Hints exist to trigger decomposition.
+
 **Files:**
 - Create: `backend/app/cleanup.py`
 - Create: `backend/app/core/telemetry.py`
@@ -1135,6 +1147,17 @@ Expected: cleanup fencing and redaction tests pass.
 git add backend/app backend/tests
 git commit -m "feat: add retention cleanup and telemetry"
 ```
+
+**Blocker follow-up progress (2026-09-03):** Added `TelemetrySpanRedactor` ahead of the Azure
+Monitor span exporter and `TelemetryLogRecordRedactor` ahead of the application-log exporter.
+OpenTelemetry 1.43 freezes the original span attribute collection before `_on_ending`, so the span
+processor replaces that private SDK collection with a sanitized immutable `BoundedAttributes`
+instance; the downstream in-memory exporter regression test proves sensitive keys and URL query and
+fragment data are absent from the exported span. The log processor sanitizes mutable log attributes
+in place. `configure_telemetry` now supplies both processors to `configure_azure_monitor`. Validation:
+Ruff passed with zero findings, strict mypy passed for both changed Python units, and the complete
+backend suite passed 666 tests. Full-repository mypy remains pre-existing red (185 errors across 17
+unrelated test files); the changed telemetry units have zero mypy errors.
 
 ### Task 11: Build the Technical Console shell and design system
 

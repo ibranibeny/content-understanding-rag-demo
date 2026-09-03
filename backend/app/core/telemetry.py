@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
-from typing import Any, Protocol
+from collections.abc import Mapping, MutableMapping
+from typing import Any, Protocol, cast
 from urllib.parse import urlsplit, urlunsplit
 
+from opentelemetry.attributes import BoundedAttributes
+from opentelemetry.context import Context
+from opentelemetry.sdk._logs import LogRecordProcessor, ReadWriteLogRecord
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 LOGGER_NAME = "content_understanding"
 _SAFE_RELEASE_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
@@ -59,14 +63,54 @@ def _without_url_secrets(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
-def sanitize_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
+def sanitize_attributes(attributes: Mapping[str, Any]) -> dict[str, Any]:
     """Return telemetry attributes with private payloads and URL secrets removed."""
-    sanitized: dict[str, object] = {}
+    sanitized: dict[str, Any] = {}
     for key, value in attributes.items():
         if _is_sensitive_key(key):
             continue
         sanitized[key] = _without_url_secrets(value) if isinstance(value, str) else value
     return sanitized
+
+
+class TelemetrySpanRedactor(SpanProcessor):
+    """Sanitize span attributes synchronously before downstream export processors run."""
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        del span, parent_context
+
+    def _on_ending(self, span: Span) -> None:
+        attributes = cast(BoundedAttributes, cast(Any, span)._attributes)
+        sanitized = sanitize_attributes(attributes)
+        cast(Any, span)._attributes = BoundedAttributes(
+            maxlen=attributes.maxlen,
+            attributes=sanitized,
+            immutable=True,
+            max_value_len=attributes.max_value_len,
+        )
+
+    def on_end(self, span: ReadableSpan) -> None:
+        del span
+
+
+class TelemetryLogRecordRedactor(LogRecordProcessor):
+    """Sanitize application log attributes before downstream export processors run."""
+
+    def on_emit(self, log_record: ReadWriteLogRecord) -> None:
+        attributes = log_record.log_record.attributes
+        if attributes is None:
+            return
+        sanitized = sanitize_attributes(attributes)
+        mutable_attributes = cast(MutableMapping[str, Any], attributes)
+        mutable_attributes.clear()
+        mutable_attributes.update(sanitized)
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        del timeout_millis
+        return True
 
 
 def configure_telemetry(
@@ -100,8 +144,15 @@ def configure_telemetry(
         logger_name=LOGGER_NAME,
         resource=resource,
         enable_live_metrics=False,
+        span_processors=[TelemetrySpanRedactor()],
+        log_record_processors=[TelemetryLogRecordRedactor()],
     )
     return True
 
 
-__all__ = ["configure_telemetry", "sanitize_attributes"]
+__all__ = [
+    "TelemetryLogRecordRedactor",
+    "TelemetrySpanRedactor",
+    "configure_telemetry",
+    "sanitize_attributes",
+]
