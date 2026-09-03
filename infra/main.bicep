@@ -674,9 +674,8 @@ resource workerApp 'Microsoft.App/containerApps@2025-01-01' = {
               accountName: storageAccountName
               queueName: ingestionQueue
               queueLength: 16
+              identity: appIdentityResourceId
             }
-            #disable-next-line BCP037 // KEDA managed-identity auth; property valid at deploy time, absent from the current Bicep type.
-            identity: appIdentityResourceId
           }
           {
             name: 'cu-result-cleanup'
@@ -684,9 +683,8 @@ resource workerApp 'Microsoft.App/containerApps@2025-01-01' = {
               accountName: storageAccountName
               queueName: cleanupQueue
               queueLength: 8
+              identity: appIdentityResourceId
             }
-            #disable-next-line BCP037 // KEDA managed-identity auth; property valid at deploy time, absent from the current Bicep type.
-            identity: appIdentityResourceId
           }
         ]
       }
