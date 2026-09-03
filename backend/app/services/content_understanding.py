@@ -11,6 +11,9 @@ from azure.identity.aio import DefaultAzureCredential
 
 API_VERSION = "2025-11-01"
 TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
+ANALYZER_DEFINITION_PROPERTIES = frozenset(
+    {"baseAnalyzerId", "description", "config", "fieldSchema", "models"}
+)
 
 
 class AsyncTokenCredential(Protocol):
@@ -100,11 +103,16 @@ class ContentUnderstandingClient:
     async def create_or_replace_analyzer(
         self, analyzer_id: str, definition: Mapping[str, Any]
     ) -> str | None:
+        request_body = {
+            key: value
+            for key, value in definition.items()
+            if key in ANALYZER_DEFINITION_PROPERTIES
+        }
         response = await self._request(
             "PUT",
             f"/contentunderstanding/analyzers/{quote(self._identifier(analyzer_id), safe='')}",
             params={"api-version": API_VERSION, "allowReplace": "true"},
-            json=dict(definition),
+            json=request_body,
             expected={200, 201},
         )
         operation = response.headers.get("Operation-Location")
@@ -134,9 +142,6 @@ class ContentUnderstandingClient:
         if operation_url is None:
             raise ContentUnderstandingError("content_understanding_malformed", retryable=False)
         result_id = self._validate_operation_url(operation_url)
-        body = self._json_object(response)
-        if body.get("id") != result_id:
-            raise ContentUnderstandingError("content_understanding_malformed", retryable=False)
         return AnalysisStart(result_id=result_id, operation_url=operation_url)
 
     async def poll(self, operation_url: str) -> PollResult:

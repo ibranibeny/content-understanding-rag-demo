@@ -762,6 +762,17 @@ git commit -m "feat: fence document lifecycle operations"
 
 ### Task 6: Define analyzers and Content Understanding adapter
 
+**GA request-alignment findings (2026-09-03):** The adapter currently requires a JSON
+response body from analyze `202 Accepted`, even though the trusted, validated
+`Operation-Location` URL already contains the persisted result ID. Analyzer definitions also
+contain local `analyzerId`, `name`, and `dynamicFieldSchema` metadata that is passed through
+unchanged today. Keep those checked-in definitions intact for local schema assertions, but
+construct create/update request JSON from the documented top-level allowlist
+`baseAnalyzerId`, `description`, `config`, `fieldSchema`, and optional `models`. The analyzer ID
+must come only from the URL. Regression coverage must prove header-only analyze responses work,
+mismatching body IDs cannot override the URL result ID, and every checked-in definition is
+filtered while retaining all supported properties.
+
 **Files:**
 - Create: `analyzers/general-business.json`
 - Create: `analyzers/invoice.json`

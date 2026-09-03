@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -16,6 +17,8 @@ from app.services.content_understanding import (
 
 ENDPOINT = "https://demo.services.ai.azure.com"
 OPERATION = f"{ENDPOINT}/contentunderstanding/analyzerResults/result-1?api-version={API_VERSION}"
+ANALYZERS = Path(__file__).parents[3] / "analyzers"
+ANALYZER_PROPERTIES = {"baseAnalyzerId", "description", "config", "fieldSchema", "models"}
 
 
 class Credential:
@@ -61,6 +64,33 @@ async def test_start_analysis_uses_exact_path_body_version_and_returns_persistab
     await service.aclose()
     assert not credential.closed
     assert not http.is_closed
+    await http.aclose()
+
+
+async def test_start_analysis_accepts_header_only_202_response() -> None:
+    service, _, http = client(
+        lambda request: httpx.Response(202, headers={"Operation-Location": OPERATION})
+    )
+
+    started = await service.start_analysis("https://blob.example/file.pdf", "router")
+
+    assert started.result_id == "result-1"
+    assert started.operation_url == OPERATION
+    await http.aclose()
+
+
+async def test_start_analysis_ignores_mismatching_body_id() -> None:
+    service, _, http = client(
+        lambda request: httpx.Response(
+            202,
+            headers={"Operation-Location": OPERATION},
+            json={"id": "attacker-controlled"},
+        )
+    )
+
+    started = await service.start_analysis("https://blob.example/file.pdf", "router")
+
+    assert started.result_id == "result-1"
     await http.aclose()
 
 
@@ -177,6 +207,36 @@ async def test_create_analyzer_and_update_defaults_use_exact_methods() -> None:
     ]
     assert requests[1].headers["Content-Type"] == "application/merge-patch+json"
     assert json.loads(requests[1].content) == {"modelDeployments": {"gpt-5": "gpt-5", "text-embedding-3-large": "text-embedding-3-large"}}
+    await http.aclose()
+
+
+async def test_create_analyzer_filters_every_checked_in_definition_to_ga_properties() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201)
+
+    service, _, http = client(handler)
+    definitions = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(ANALYZERS.glob("*.json"))
+    ]
+
+    for definition in definitions:
+        await service.create_or_replace_analyzer(definition["analyzerId"], definition)
+
+    assert len(requests) == len(definitions)
+    for request, definition in zip(requests, definitions, strict=True):
+        request_body = json.loads(request.content)
+        assert set(request_body) == set(definition) & ANALYZER_PROPERTIES
+        assert "analyzerId" not in request_body
+        assert "name" not in request_body
+        assert request_body["baseAnalyzerId"] == definition["baseAnalyzerId"]
+        assert request_body["description"] == definition["description"]
+        assert request_body["config"] == definition["config"]
+        assert request_body["fieldSchema"] == definition["fieldSchema"]
+
     await http.aclose()
 
 

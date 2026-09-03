@@ -1,5 +1,23 @@
 # Execution Progress Details
 
+## 2026-09-03 — Task 6 Content Understanding GA request alignment
+
+- Scope: corrected only analyzer create/update request serialization and analyze-start response
+	handling, with regression coverage over all five checked-in analyzer definitions.
+- Root cause: `start_analysis` treated an optional response body ID as authoritative after already
+	validating `Operation-Location`; `create_or_replace_analyzer` serialized the complete local
+	definition, including URL identity and unsupported metadata.
+- TDD red: the focused service suite produced the expected three failures for a header-only 202,
+	a mismatching response body ID, and unfiltered checked-in definitions (`3 failed, 21 passed`).
+- Implementation: result identity now comes solely from the exact-origin, exact-path, GA-version
+	operation URL. Analyzer request JSON is constructed from `baseAnalyzerId`, `description`,
+	`config`, `fieldSchema`, and optional `models`; analyzer identity remains solely in the URL.
+- TDD green and final verification: focused Task 6 tests `26 passed`; Ruff passed; strict mypy
+	reported no issues in 29 application source files; full backend suite `593 passed`;
+	`git diff --check` passed. All commands ran offline with the existing environment.
+- Decomposition: atomic. The two request-boundary corrections share one adapter and focused suite.
+	No scenario skill root, Execution stage, or Breakdown Hints files were forwarded.
+
 ## 2026-09-03 — Task 1 final dependency-policy quality remediation
 
 - Scope: tightened `backend/tests/test_dependency_policy.py` without changing dependency manifests or performing network/package operations.
