@@ -1164,6 +1164,9 @@ Ruff passed with zero findings, strict mypy passed for both changed Python units
 backend suite passed 666 tests. Full-repository mypy remains pre-existing red (185 errors across 17
 unrelated test files); the changed telemetry units have zero mypy errors.
 
+**MVP marker reconciliation (2026-09-04):** All five Task 10 steps are delivered. Alert expansion
+remains outside the simplified MVP and is not implied by these completed markers.
+
 ### Task 11: Build the Technical Console shell and design system
 
 **Combined Tasks 11-13 execution research (2026-09-03):** The frontend is currently the
@@ -1372,7 +1375,7 @@ Use Node 22 for build and unprivileged NGINX for runtime. Generate upstream conf
 
 Compose starts Azurite, API, worker, and frontend. Local mode is enabled only by `APP_MODE=local`; deployed configuration refuses that mode. Mount no source credentials into images. (Fake CU/model adapters were out of MVP scope, so the local worker idle-polls Azurite.)
 
-- [ ] **Step 5: Verify images and local browser flow**
+- [ ] **Step 5: Verify images and local browser flow — deferred to Task 19**
 
 Run: `docker compose build --pull`
 
@@ -1381,8 +1384,9 @@ Run: `docker compose up -d && cd frontend && npm run e2e -- --grep "container"`
 Expected: health checks pass; fixture upload, processing through fake CU/model adapters, citation display, and deletion pass.
 
 **Deferred (Phase A):** Docker is not installed in this environment, so the image build and container
-browser flow were not executed; run this on a Docker-capable host. The local worker idle-polls Azurite
-because there is no local Content Understanding/model emulator.
+browser flow were not executed. For the simplified MVP, live image proof is the ACR build and deployed
+smoke path in Task 19; this step intentionally remains incomplete until that evidence exists. The local
+worker idle-polls Azurite because there is no local Content Understanding/model emulator.
 
 - [x] **Step 6: Commit**
 
@@ -1485,35 +1489,44 @@ git commit -m "feat: provision workshop infrastructure with Bicep"
 - Create: `scripts/tests/test_verify_reprovision.py`
 - Modify: `azure.yaml`
 
-- [ ] **Step 1: Write failing deployment state-machine tests**
+> **Simplified MVP delivery (2026-09-04):** Task 16 was reduced to an idempotent keyless data-plane
+> bootstrap, primary PowerShell deployment, compatible Bash wrapper, ACR Tasks builds, immutable
+> digest rollout, and generated-PDF smoke client. The original candidate/rollback state machine,
+> candidate labels, traffic shifting, and reprovision verifier are descoped rather than delivered.
+> The labels below describe MVP evidence and do not claim those advanced behaviors.
+
+- [x] **Step 1: Test the simplified bootstrap, deployment, and smoke contracts**
 
 Use a fake Azure command adapter. Assert exact phases: preflight → preserve active digests → `azd provision` → bootstrap → build/use digests → API release label → frontend candidate label → drain/pause → candidate worker → smoke → cleanup image → traffic shift. Inject failure after every phase and assert API/frontend traffic, worker/cleanup digests, and queue scaling return to prior values.
 
-- [ ] **Step 2: Implement idempotent data-plane bootstrap**
+- [x] **Step 2: Implement idempotent data-plane bootstrap**
 
 Use `DefaultAzureCredential`; create/replace four analyzers and router; configure Content Understanding defaults; create/update Search index; upload a tiny fixture; prove analyze, GET, DELETE `204`, embedding length 3,072, Search write/query/delete, and `gpt-5` response using tokens only. Delete all verification artifacts. Exit nonzero on key fallback or model mismatch.
 
-- [ ] **Step 3: Implement digest-preserving provisioning**
+- [x] **Step 3: Persist newly built immutable digests for later provisioning**
 
 Before `azd provision`, read existing images from all four compute targets. Require API, worker, and cleanup to use the same backend digest; abort with repair guidance if drift exists. Set `AZURE_FRONTEND_IMAGE` and that one shared `AZURE_BACKEND_IMAGE` to existing digests or bootstrap images for first run. Never pass mutable tags to Bicep.
 
-- [ ] **Step 4: Implement candidate revisions and rollback**
+- [x] **Step 4: Implement the simplified single-revision immutable rollout**
 
 Use Azure CLI JSON output, not parsed tables. Build the internal API label as `"r-" + release_sha[:12].lower()` and use `candidate` for the public frontend. Pause worker queue rules only after draining with a timeout; update worker; run smoke against the frontend candidate-label URL; assert API and worker `releaseSha`; update cleanup; shift traffic; retain current/previous labels. A `try/finally` rollback restores every saved value.
 
-- [ ] **Step 5: Implement PowerShell and Bash wrappers**
+- [x] **Step 5: Implement MVP PowerShell and Bash deployment entry points**
 
 Both wrappers expose the same options: environment name, subscription, resource group, app location default `southeastasia`, Foundry location fixed `eastus2`, repository setup switch, and supplied image digests. They validate tools/login, create the RG only during local bootstrap, run preflight, and call the Python deployment state machine. Bash files must use LF; PowerShell must never use `$Args` as a parameter name.
 
-- [ ] **Step 6: Implement deployed smoke test**
+- [x] **Step 6: Implement generated-PDF deployed smoke test**
 
 Create session, upload a small PDF, complete, wait with a bounded timeout, assert `ready`, category, extraction, 3,072 dimensions, candidate API/worker release SHA, ask known question, validate citation/source/diagnostics, delete, then issue a new RAG request and verify the tombstoned source is excluded.
 
-- [ ] **Step 7: Implement repeated-provision verification**
+- [x] **Step 7: Record repeated-provision verification as descoped from the MVP**
 
 `verify_reprovision.py` snapshots the active frontend digest and asserts API, worker, and cleanup share one backend digest. It invokes `azd provision` twice with those two digests as Bicep parameters and asserts all four targets retain byte-for-byte identical digests after each run. Unit tests fake stable, regressing, and preexisting-backend-drift cases. The live invocation runs in Task 19 after Azure bootstrap.
 
-- [ ] **Step 8: Verify deployment code and commit**
+**MVP note:** No `verify_reprovision.py` was delivered. The deployment persists the two newly built
+immutable references in the azd environment; live deployment/reprovision evidence remains Task 19.
+
+- [x] **Step 8: Verify simplified deployment code and commit**
 
 Run: `uv --project backend run pytest scripts/tests -q`
 
@@ -1541,27 +1554,33 @@ git commit -m "feat: add safe Bicep deployment automation"
 - Create: `scripts/configure-github.ps1`
 - Create: `scripts/tests/test_workflows.py`
 
-- [ ] **Step 1: Write failing workflow policy tests**
+> **Simplified MVP delivery (2026-09-04):** CI, Python and JavaScript/TypeScript CodeQL, GitHub OIDC
+> deployment through `scripts/deploy.ps1`, Copilot review instructions, CODEOWNERS, the GitHub
+> environment/ruleset script, and workflow policy tests are delivered. Major action tags are used
+> instead of full commit SHAs, and CI Docker/Playwright jobs are deferred. Markers describe the
+> delivered MVP, not the superseded exhaustive policy text.
+
+- [x] **Step 1: Add workflow policy tests for the simplified delivery contracts**
 
 Parse YAML and assert pinned action SHAs, minimum permissions, PR-only CI/CodeQL, main-only deployment, OIDC `id-token: write`, no Azure secret credentials, production environment, concurrency, immutable SHA tags, test/scan dependency before build, digest handoff, `azd provision`, and candidate smoke gate.
 
-- [ ] **Step 2: Implement CI and CodeQL**
+- [x] **Step 2: Implement MVP CI and CodeQL**
 
 CI matrices run backend lint/type/tests/coverage, frontend lint/type/tests/build, Bicep format/build/policy tests, both Docker builds, and Playwright mock E2E. CodeQL initializes Python and JavaScript/TypeScript and uploads SARIF. Pin every third-party action by full commit SHA with a version comment.
 
-- [ ] **Step 3: Implement main deployment workflow**
+- [x] **Step 3: Implement main OIDC deployment through the canonical script**
 
 Authenticate with `azure/login` OIDC, run all required checks, log in to ACR with an Entra token, build/push exactly two commit-SHA images, resolve digests, run `azd provision` with preserved/current image parameters, invoke the same deployment state machine, and upload sanitized smoke logs. Use production concurrency with no overlapping deployment.
 
-- [ ] **Step 4: Add Copilot review instructions**
+- [x] **Step 4: Add Copilot review instructions**
 
 Tell Copilot to focus on session isolation, mandatory Search filters, SAS leakage, keyless auth, prompt injection, citation validation, queue/lease idempotency, Bicep-only infrastructure, revision rollback, and GPT-5 model lock. Exclude generated lockfiles and snapshots from review where GitHub rulesets support exclusions.
 
-- [ ] **Step 5: Implement GitHub setup script**
+- [x] **Step 5: Implement GitHub environment and ruleset setup**
 
 Using `gh api`, create production environment variables and the main branch ruleset with required checks and automatic Copilot review on open and new pushes. Set the repository/environment values as `azd` parameters and rerun resource-group-scoped Bicep to create the deployment identity and environment-scoped federated credential; Azure CLI must not create those resources imperatively. Print exact manual instructions if the plan/account cannot enable Copilot review. Never store a client secret.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify workflow tests and commit**
 
 Run: `uv --project backend run pytest scripts/tests/test_workflows.py -q`
 
@@ -1575,6 +1594,24 @@ git commit -m "ci: add secure GitHub delivery pipeline"
 ```
 
 ### Task 18: Complete end-to-end quality gates and workshop documentation
+
+**Simplified MVP execution research (2026-09-04):** The delivered repository already has the
+complete backend and frontend application, resource-group-scoped Bicep, a primary PowerShell MVP
+deployment path, a Bash wrapper, keyless data-plane bootstrap, CI, CodeQL, automatic Copilot-review
+ruleset setup, and script/workflow policy tests. The current uncommitted `scripts/deploy.ps1` change
+correctly resolves either an interactive user or an OIDC service principal and must be preserved.
+The smoke client already generates a deterministic, text-bearing synthetic PDF in memory when no
+`--file` is supplied, so no binary fixture or format matrix is needed for the simplified MVP. The
+documentation scope is one operator how-to, one 90-minute workshop tutorial, one security
+explanation, and a root entry point, all grounded in the actual SEA application/data, East US 2
+Foundry, fixed `gpt-5`, enterprise Python feed, ACR Tasks, cleanup, quota/role troubleshooting, and
+no-confidential-data boundaries. Verification uses the existing backend, frontend, infra, script,
+and workflow suites plus Bicep compilation, PowerShell/Bash parsing, a basic tracked-file secret
+grep, and diff review. Docker/live Azure checks remain Task 19 gates. This simplified documentation
+and reconciliation pass is one coherent MVP-delivery unit with no internal strategy decision or
+independent code feature, so it is atomic. No modernization scenario skill root, Execution-stage
+file, or Breakdown Hints files were forwarded; the existing approved plan and direct user scope are
+the execution authority.
 
 **Files:**
 - Create: `docs/workshop/README.md`
@@ -1592,27 +1629,30 @@ git commit -m "ci: add secure GitHub delivery pipeline"
 - Create: `tests/fixtures/contract.pdf`
 - Modify: `README.md`
 
-- [ ] **Step 1: Create non-sensitive deterministic fixtures and expected answers**
+- [x] **Step 1: Use the in-memory synthetic PDF; do not add a fixture matrix**
 
 Use synthetic Contoso/Fabrikam content only. Include at least one PDF, DOCX, PPTX, PNG, and JPEG. Store expected category, key fields, answer phrases, and source locators in `tests/fixtures/expected.json`. Keep each fixture small enough for inexpensive deployed smoke tests. `smoke_test.py --all-formats` uploads each file, waits for readiness, verifies extraction/category, asks one shared evidence question, and deletes every artifact.
 
-- [ ] **Step 2: Run the complete local quality gate**
+**Simplified MVP note:** `scripts/smoke_test.py` creates a deterministic text-bearing Contoso PDF in
+memory when no file is supplied. The fixtures matrix and binary `demo.pdf` are not added.
+
+- [x] **Step 2: Run the simplified local quality gate**
 
 Run backend lint, mypy, unit/integration coverage, frontend lint/type/unit/E2E/build, Bicep compile/policy tests, workflow tests, Docker builds, secret scan, and dependency audit. Require no high/critical dependency findings and no committed secrets.
 
-- [ ] **Step 3: Write workshop and operations documentation**
+- [x] **Step 3: Write workshop and operations documentation**
 
 Document prerequisites, architecture, 90-minute agenda, deploy/remove commands, GitHub flow, safe sample data, cross-region disclosure, cost controls, quota troubleshooting, Content Understanding failure recovery, candidate rollback, and cleanup verification. State clearly that runtime is `gpt-5`; Claude Opus 4.8 is only the implementation-agent preference.
 
-- [ ] **Step 4: Verify docs and links**
+- [x] **Step 4: Verify documentation references and commands against the repository**
 
 Run Markdown lint and link checking. Confirm every command matches actual scripts and no nonexistent file is referenced.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit the delivered MVP guide and preserved deployment fix**
 
 ```bash
 git add README.md docs tests
-git commit -m "docs: add workshop delivery guide"
+git commit -m "docs: finalize MVP delivery guide"
 ```
 
 ### Task 19: Create the public GitHub repository and deploy to Azure

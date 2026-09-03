@@ -113,9 +113,17 @@ if ($LASTEXITCODE -ne 0) { throw "Not signed in to Azure CLI. Run 'az login' and
 if ($Subscription) {
     Invoke-Checked -What "Select subscription $Subscription" -Action { az account set --subscription $Subscription }
 }
-$principalId = (az ad signed-in-user show --query id -o tsv)
+$account = az account show -o json | ConvertFrom-Json
+if ($account.user.type -eq 'servicePrincipal') {
+    $clientId = $env:AZURE_CLIENT_ID
+    if (-not $clientId) { $clientId = [string]$account.user.name }
+    $principalId = (az ad sp show --id $clientId --query id -o tsv)
+}
+else {
+    $principalId = (az ad signed-in-user show --query id -o tsv)
+}
 if ($LASTEXITCODE -ne 0 -or -not $principalId) {
-    throw "Could not resolve the signed-in principal object id for data-plane role assignment."
+    throw "Could not resolve the current Azure principal object id for role assignment."
 }
 
 # --- Phase 2: azd environment + provision -----------------------------------

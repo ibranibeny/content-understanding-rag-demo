@@ -1,5 +1,29 @@
 # Execution Progress Details
 
+## 2026-09-04 — Simplified Task 18 MVP delivery guide
+
+- Scope: created the deployment how-to, 90-minute workshop tutorial/architecture, security and
+	data-handling explanation, and exact root setup/deploy/GitHub entry point; reconciled Tasks 10,
+	14, 16, 17, and 18 to the delivered MVP without claiming candidate or live deployment work.
+- Preserved change: included the pre-existing `scripts/deploy.ps1` correction that resolves both
+	interactive-user and OIDC service-principal object IDs.
+- Fixture decision: `scripts/smoke_test.py` already generates a deterministic text-bearing Contoso
+	PDF in memory, so no binary `tests/fixtures/demo.pdf` or format matrix was added.
+- Verification: backend locked sync and full suite `677 passed`; Ruff clean; strict mypy clean over
+	38 application files; frontend lint/typecheck and build passed, with 7 tests passing; Bicep build
+	succeeded; 27 infra tests, 26 script tests, and 15 workflow tests passed; PowerShell parse and
+	deployment `-WhatIf`, Bash syntax, local Markdown-link checks, basic tracked-file secret scan, and
+	`git diff --check` passed.
+- Correction during verification: running `uv --project backend run pytest` from the repository
+	root selected an environment without the async plugin and produced 242 harness failures. Running
+	the repository's documented `cd backend; uv sync --locked; uv run pytest -q` command passed all
+	677 tests; no source fix was warranted.
+- Deferred honestly: Task 14 image/live browser proof remains incomplete until Task 19 ACR build and
+	deployment. Task 16 candidate state machine/reprovision verifier and Task 17 action-SHA plus
+	Docker/Playwright hardening are descoped from the simplified MVP.
+- Decomposition: atomic. No scenario skill root, Execution stage, or Breakdown Hints files were
+	forwarded; the approved plan and direct simplified-MVP request were evaluated before source edits.
+
 ## 2026-09-03 — Task 6 Content Understanding GA request alignment
 
 - Scope: corrected only analyzer create/update request serialization and analyze-start response

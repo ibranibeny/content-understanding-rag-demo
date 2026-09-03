@@ -1,61 +1,99 @@
-# Content Understanding Meets GitHub Copilot: Build and Ship an Intelligent Document RAG App
+# Content Understanding Meets GitHub Copilot
 
-This repository contains a public workshop application for exploring document intelligence and retrieval-augmented generation. The application runtime model is GPT-5.
+An English Technical Console that uploads business documents, extracts structured content with
+Microsoft Foundry Content Understanding, indexes grounded evidence in Azure AI Search, and streams
+cited answers from `gpt-5`.
 
-## Current status
+> **Workshop data only.** Do not upload confidential, regulated, personal, customer, or production
+> information. Use synthetic data such as the PDF generated in memory by the smoke test.
 
-The application is implemented: anonymous sessions, direct-to-Blob upload, Content Understanding
-extraction, chunking/embeddings, Azure AI Search retrieval, and grounded GPT-5 streaming chat, with a
-containerized local stack. Azure infrastructure (Bicep), CI/CD, and public deployment are in progress.
+## Architecture and regions
 
-## Development
+- Frontend, API, worker, cleanup job, Storage, Azure AI Search, and ACR: **Southeast Asia**.
+- Microsoft Foundry, Content Understanding, `gpt-5`, and `text-embedding-3-large`: **East US 2**.
+- Documents and derived evidence therefore cross regions for AI processing.
+- Runtime authentication is keyless through Microsoft Entra ID and managed identities.
 
-- Backend: Python 3.12 managed with `uv`
-- Frontend: React 19, TypeScript, and Vite
+See [the workshop](docs/workshop/README.md), [deployment guide](docs/deployment.md), and
+[security model](docs/security.md).
 
-### Prerequisites
+## Prerequisites
 
 - Python 3.12 and `uv`
-- Node.js and npm
-- Access to the corporate Microsoft package proxy configured in `backend/pyproject.toml`; Python artifacts resolve only through this proxy
+- Node.js 20+ and npm
+- Azure CLI, Azure Developer CLI (`azd`), and PowerShell 7
+- An Azure subscription with permission to deploy resources and assign roles
+- Access to the Microsoft enterprise Python feed configured in `backend/pyproject.toml`
+- Optional: Docker for the local container build deferred to the live-delivery gate
 
-### Local checks
+The backend resolves Python packages only through
+`https://packagefeedproxy.microsoft.io/pypi/simple/`; do not replace it with public PyPI.
 
-Backend:
+## Set up and verify locally
 
-```text
-cd backend
+```powershell
+Set-Location backend
 uv sync --locked
 uv run ruff check .
 uv run mypy app
 uv run pytest -q
-```
-
-Frontend:
-
-```text
-cd frontend
+Set-Location ../frontend
 npm ci
 npm run lint
 npm run typecheck
 npm test -- --run
 npm run build
+Set-Location ..
+az bicep build --file infra/main.bicep
+uv --project backend run pytest scripts/tests infra/tests -q
 ```
 
-### Run the local stack with Docker
+The local Compose stack provides the frontend, API, worker, and Azurite. Content Understanding,
+embeddings, and GPT-5 have no local emulator; use the deployed smoke test for the full path.
 
-The Compose stack runs the frontend (public NGINX), the FastAPI API, the queue worker, and Azurite
-for Blob/Queue/Table storage. Content Understanding, embeddings, and GPT-5 have no local emulator, so
-point `FOUNDRY_ENDPOINT` and `SEARCH_ENDPOINT` at real keyless Azure endpoints to exercise the full
-pipeline; otherwise the shell, health checks, and storage run locally.
-
-```text
-cp .env.example .env   # optional: override endpoints; contains no secrets
+```powershell
+Copy-Item .env.example .env
 docker compose build
 docker compose up -d
-# Frontend http://localhost:8080  |  API liveness http://localhost:8000/health/live
-docker compose run --rm api cleanup   # run the retention sweep on demand
 docker compose down
 ```
 
-Do not upload confidential, regulated, or production information to the workshop application.
+## Deploy and remove
+
+Sign in, select the intended subscription, and run the canonical PowerShell deployment:
+
+```powershell
+az login
+./scripts/deploy.ps1 -EnvironmentName cudemo -Subscription <subscription-id>
+```
+
+The script provisions Bicep, builds two images with ACR Tasks, deploys immutable digests, bootstraps
+the data plane, and runs the generated-PDF smoke test. Full commands, cleanup, and troubleshooting
+are in [the deployment guide](docs/deployment.md).
+
+## GitHub CodeQL and Copilot review
+
+The repository includes CI, CodeQL for Python and JavaScript/TypeScript, an OIDC deployment workflow,
+Copilot review instructions, and a ruleset setup script. After Bicep provisions the GitHub deployment
+identity, configure the `production` environment and default-branch rules:
+
+```powershell
+./scripts/configure-github.ps1 -Repo <owner/repository> `
+	-AzureClientId <deployment-identity-client-id> `
+	-AzureTenantId <tenant-id> `
+	-AzureSubscriptionId <subscription-id>
+```
+
+Pull requests run CI and CodeQL. The ruleset requires their checks and requests Copilot review when
+the GitHub account supports it. Pushes to `main` deploy through GitHub OIDC; no Azure client secret
+is stored. Live proof and branch protection activation remain part of Task 19.
+
+## Runtime operations
+
+Start retention cleanup on demand after substituting Bicep outputs:
+
+```powershell
+az containerapp job start --name <cleanup-job-name> --resource-group <resource-group>
+```
+
+For local storage cleanup, run `docker compose run --rm api cleanup`.
