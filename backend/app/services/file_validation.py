@@ -50,12 +50,9 @@ def _invalid_name() -> AppError:
 def sanitize_file_name(raw_name: str) -> str:
     if "/" in raw_name or "\\" in raw_name:
         raise _invalid_name()
-    without_controls = "".join(
-        character
-        for character in raw_name
-        if unicodedata.category(character) not in {"Cc", "Cf"}
-    )
-    normalized = unicodedata.normalize("NFC", without_controls)
+    if any(unicodedata.category(character) in {"Cc", "Cf"} for character in raw_name):
+        raise _invalid_name()
+    normalized = unicodedata.normalize("NFC", raw_name)
     name = PurePosixPath(normalized.replace("\\", "/")).name.strip()
     if not name or name in {".", ".."} or len(name) > MAX_FILE_NAME_LENGTH:
         raise _invalid_name()

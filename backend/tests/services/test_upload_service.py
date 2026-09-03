@@ -6,9 +6,20 @@ from uuid import UUID
 import pytest
 
 from app.core.errors import AppError, ConcurrencyConflict
-from app.domain.models import DocumentRecord, DocumentState, UploadInitRequest
-from app.repositories.memory_repository import MemoryApplicationRepository, MemoryDocumentRepository
+from app.domain.models import (
+    DocumentRecord,
+    DocumentState,
+    IngestionMessage,
+    OutboxRecord,
+    UploadInitRequest,
+)
+from app.repositories.memory_repository import (
+    MemoryApplicationRepository,
+    MemoryDocumentRepository,
+    MemoryWorkQueue,
+)
 from app.services.blob_service import UploadGrant, VerifiedUpload
+from app.services.outbox_service import OutboxDispatcher
 from app.services.session_service import SessionService
 from app.services.upload_service import UploadService
 
@@ -61,11 +72,11 @@ class BrokenGrantBlobs(Blobs):
 
 class Dispatcher:
     def __init__(self) -> None:
-        self.calls = 0
+        self.calls: list[str] = []
 
-    async def dispatch_once(self) -> int:
-        self.calls += 1
-        return 1
+    async def dispatch_outbox(self, outbox_id: str) -> bool:
+        self.calls.append(outbox_id)
+        return True
 
 
 class FailingTransactionRepository(MemoryApplicationRepository):
@@ -91,8 +102,8 @@ class ConflictOnceRepository(MemoryApplicationRepository):
 
 
 class BrokenDispatcher(Dispatcher):
-    async def dispatch_once(self) -> int:
-        self.calls += 1
+    async def dispatch_outbox(self, outbox_id: str) -> bool:
+        self.calls.append(outbox_id)
         raise RuntimeError("outbox listing unavailable")
 
 
@@ -200,6 +211,46 @@ async def test_init_rejects_path_components_before_any_side_effect(file_name: st
     assert blobs.created == []
 
 
+@pytest.mark.parametrize("control", ["\x00", "\n", "\u200b", "\u200d", "\ufeff"])
+@pytest.mark.parametrize("file_name_template", ["{}a.pdf", "a{}b.pdf", "a{}.pdf"])
+async def test_init_rejects_control_characters_before_any_side_effect(
+    control: str, file_name_template: str
+) -> None:
+    service, documents, sessions, blobs, _ = await setup()
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(
+                file_name=file_name_template.format(control),
+                content_type="application/pdf",
+                size_bytes=8,
+            ),
+        )
+
+    assert caught.value.code == "invalid_file_name"
+    quota = await sessions.get(SESSION_KEY)
+    assert quota is not None
+    assert (quota[0].document_count, quota[0].total_bytes) == (0, 0)
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+    assert blobs.created == []
+
+
+async def test_init_normalizes_valid_decomposed_unicode_before_side_effects() -> None:
+    service, documents, _, blobs, _ = await setup()
+
+    await service.initialize(
+        SESSION_KEY,
+        UploadInitRequest(file_name="Cafe\u0301.pdf", content_type="application/pdf", size_bytes=8),
+    )
+
+    normalized_name = "Caf\u00e9.pdf"
+    blob_name = f"uploads/{SESSION_KEY}/{DOCUMENT_ID}/{normalized_name}"
+    assert blobs.created == [(blob_name, "application/pdf")]
+    stored = await documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert stored is not None and stored.value.file_name == normalized_name
+
+
 async def test_init_transaction_failure_leaves_quota_and_documents_unchanged() -> None:
     service, documents, sessions, _, _ = await setup(FailingTransactionRepository())
 
@@ -291,7 +342,7 @@ async def test_complete_verifies_blob_and_atomically_queues_exact_outbox() -> No
         "enqueuedAt": "2026-09-03T10:00:00Z",
         "resumeStage": "analyzing",
     }
-    assert dispatcher.calls == 1
+    assert dispatcher.calls == [f"ingest:{DOCUMENT_ID}:1"]
 
 
 async def test_complete_succeeds_and_safely_logs_when_opportunistic_dispatch_fails(
@@ -338,7 +389,111 @@ async def test_repeated_complete_is_idempotent_and_redispatches_without_new_outb
 
     assert second == first
     assert len(await documents.all_outbox_for_test()) == 1
-    assert dispatcher.calls == 2
+    assert dispatcher.calls == [f"ingest:{DOCUMENT_ID}:1"] * 2
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        DocumentState.QUEUED,
+        DocumentState.ANALYZING,
+        DocumentState.CLASSIFIED,
+        DocumentState.EXTRACTED,
+        DocumentState.RESULT_CLEANUP_PENDING,
+        DocumentState.CHUNKING,
+        DocumentState.EMBEDDING,
+        DocumentState.INDEXING,
+        DocumentState.READY,
+    ],
+)
+async def test_repeated_complete_returns_existing_valid_state_and_targets_its_outbox(
+    state: DocumentState,
+) -> None:
+    service, documents, _, _, dispatcher = await setup()
+    await service.initialize(
+        SESSION_KEY, UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8)
+    )
+    await service.complete(SESSION_KEY, DOCUMENT_ID, '"etag"', CORRELATION_ID)
+    current = await documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert current is not None
+    await documents.replace(current.value.model_copy(update={"state": state}), current.etag)
+    dispatcher.calls.clear()
+
+    response = await service.complete(SESSION_KEY, DOCUMENT_ID, '"ignored"', CORRELATION_ID)
+
+    assert response.state == state
+    assert dispatcher.calls == [f"ingest:{DOCUMENT_ID}:1"]
+
+
+@pytest.mark.parametrize(
+    "state", [DocumentState.FAILED, DocumentState.DELETING, DocumentState.DELETED]
+)
+async def test_complete_rejects_terminal_or_deleting_states_without_dispatch(
+    state: DocumentState,
+) -> None:
+    service, documents, _, _, dispatcher = await setup()
+    await service.initialize(
+        SESSION_KEY, UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8)
+    )
+    current = await documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert current is not None
+    await documents.replace(current.value.model_copy(update={"state": state}), current.etag)
+
+    with pytest.raises(AppError) as caught:
+        await service.complete(SESSION_KEY, DOCUMENT_ID, '"ignored"', CORRELATION_ID)
+
+    assert caught.value.code == "invalid_document_state"
+    assert caught.value.status_code == 409
+    assert dispatcher.calls == []
+
+
+async def test_complete_never_dispatches_another_documents_pending_outbox() -> None:
+    repository = MemoryApplicationRepository()
+    session_service = SessionService(
+        repository.sessions,
+        Clock(),
+        token_factory=lambda: TOKEN,
+        session_documents=repository,
+    )
+    await session_service.issue()
+    queue = MemoryWorkQueue()
+    dispatcher = OutboxDispatcher(repository.documents, queue, Clock())
+    service = UploadService(
+        session_service,
+        repository.documents,
+        Blobs(),
+        dispatcher,
+        Clock(),
+        document_id_factory=lambda: DOCUMENT_ID,
+    )
+    other_id = UUID("33333333-3333-4333-8333-333333333333")
+    other_message = IngestionMessage(
+        version=1,
+        session_key=SESSION_KEY,
+        document_id=other_id,
+        blob_name=f"uploads/{SESSION_KEY}/{other_id}/b.pdf",
+        correlation_id=CORRELATION_ID,
+        enqueued_at=NOW,
+    )
+    await repository.documents.put_outbox_for_test(
+        OutboxRecord(
+            outbox_id=f"ingest:{other_id}:1",
+            session_key=SESSION_KEY,
+            kind="ingestion",
+            payload=other_message,
+            created_at=NOW,
+        )
+    )
+    await service.initialize(
+        SESSION_KEY, UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8)
+    )
+
+    await service.complete(SESSION_KEY, DOCUMENT_ID, '"etag"', CORRELATION_ID)
+    await service.complete(SESSION_KEY, DOCUMENT_ID, '"ignored"', CORRELATION_ID)
+
+    assert [message.document_id for message in queue.ingestion_messages] == [DOCUMENT_ID]
+    pending = await repository.documents.list_pending_outbox(10)
+    assert [record.outbox_id for record, _ in pending] == [f"ingest:{other_id}:1"]
 
 
 async def test_cross_session_complete_is_not_found_without_blob_access() -> None:
@@ -366,7 +521,7 @@ async def test_invalid_state_cannot_be_completed() -> None:
     assert caught.value.code == "invalid_document_state"
 
 
-@pytest.mark.parametrize("state", [DocumentState.FAILED, DocumentState.DELETING, DocumentState.READY])
+@pytest.mark.parametrize("state", [DocumentState.FAILED, DocumentState.DELETING])
 async def test_concurrent_nonqueued_transition_is_not_reported_as_completed(
     state: DocumentState,
 ) -> None:

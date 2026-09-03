@@ -20,9 +20,23 @@ from app.services.session_service import SessionService
 
 logger = logging.getLogger(__name__)
 
+COMPLETED_UPLOAD_STATES = frozenset(
+    {
+        DocumentState.QUEUED,
+        DocumentState.ANALYZING,
+        DocumentState.CLASSIFIED,
+        DocumentState.EXTRACTED,
+        DocumentState.RESULT_CLEANUP_PENDING,
+        DocumentState.CHUNKING,
+        DocumentState.EMBEDDING,
+        DocumentState.INDEXING,
+        DocumentState.READY,
+    }
+)
+
 
 class Dispatcher(Protocol):
-    async def dispatch_once(self) -> int: ...
+    async def dispatch_outbox(self, outbox_id: str) -> bool: ...
 
 
 class UploadService:
@@ -110,8 +124,9 @@ class UploadService:
         if versioned is None:
             raise AppError("document_not_found", 404, "The document was not found.", False)
         document = versioned.value
-        if document.state not in {DocumentState.AWAITING_UPLOAD, DocumentState.FAILED}:
-            await self._try_dispatch()
+        outbox_id = f"ingest:{document_id}:1"
+        if document.state in COMPLETED_UPLOAD_STATES:
+            await self._try_dispatch(outbox_id)
             return self._response(document)
         if document.state != DocumentState.AWAITING_UPLOAD:
             raise AppError(
@@ -145,7 +160,7 @@ class UploadService:
             enqueued_at=now,
         )
         outbox = OutboxRecord(
-            outbox_id=f"ingest:{document_id}:1",
+            outbox_id=outbox_id,
             session_key=session_key,
             kind="ingestion",
             payload=message,
@@ -164,7 +179,7 @@ class UploadService:
                     "The document changed concurrently. Retry the request.",
                     True,
                 ) from None
-            if current.value.state != DocumentState.QUEUED:
+            if current.value.state not in COMPLETED_UPLOAD_STATES:
                 raise AppError(
                     "invalid_document_state",
                     409,
@@ -172,12 +187,12 @@ class UploadService:
                     False,
                 ) from None
             committed = current
-        await self._try_dispatch()
+        await self._try_dispatch(outbox_id)
         return self._response(committed.value)
 
-    async def _try_dispatch(self) -> None:
+    async def _try_dispatch(self, outbox_id: str) -> None:
         try:
-            await self._dispatcher.dispatch_once()
+            await self._dispatcher.dispatch_outbox(outbox_id)
         except Exception as exc:  # noqa: BLE001 - durable outbox remains pending
             logger.warning(
                 "opportunistic_outbox_dispatch_failed exception_class=%s",

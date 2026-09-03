@@ -154,6 +154,14 @@ class MemoryDocumentRepository:
         pending.sort(key=lambda item: (item[0].created_at, item[0].outbox_id))
         return pending[:limit]
 
+    async def get_pending_outbox(self, outbox_id: str) -> tuple[OutboxRecord, str] | None:
+        async with self._lock:
+            stored = self._outbox.get(outbox_id)
+            if stored is None or stored[0].sent_at is not None:
+                return None
+            record, version = stored
+            return record, self._etag(version)
+
     async def mark_outbox_sent(self, outbox_id: str, etag: str, sent_at: datetime) -> None:
         async with self._lock:
             stored = self._outbox.get(outbox_id)

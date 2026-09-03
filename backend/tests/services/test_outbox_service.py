@@ -12,6 +12,7 @@ from app.services.outbox_service import OutboxDispatcher
 NOW = datetime(2026, 9, 3, 10, 0, tzinfo=UTC)
 SESSION_KEY = "a" * 64
 DOCUMENT_ID = UUID("11111111-1111-4111-8111-111111111111")
+OTHER_DOCUMENT_ID = UUID("33333333-3333-4333-8333-333333333333")
 
 
 class Clock:
@@ -57,17 +58,17 @@ class ListFailsOnceRepository(MemoryDocumentRepository):
         return await super().list_pending_outbox(limit)
 
 
-def outbox() -> OutboxRecord:
+def outbox(document_id: UUID = DOCUMENT_ID) -> OutboxRecord:
     message = IngestionMessage(
         version=1,
         session_key=SESSION_KEY,
-        document_id=DOCUMENT_ID,
-        blob_name=f"uploads/{SESSION_KEY}/{DOCUMENT_ID}/a.pdf",
+        document_id=document_id,
+        blob_name=f"uploads/{SESSION_KEY}/{document_id}/a.pdf",
         correlation_id=UUID("22222222-2222-4222-8222-222222222222"),
         enqueued_at=NOW,
     )
     return OutboxRecord(
-        outbox_id=f"ingest:{DOCUMENT_ID}:1",
+        outbox_id=f"ingest:{document_id}:1",
         session_key=SESSION_KEY,
         kind="ingestion",
         payload=message,
@@ -142,6 +143,55 @@ async def test_sent_outbox_is_not_dispatched_again() -> None:
     assert len(queue.messages) == 1
     stored = await repository.all_outbox_for_test()
     assert stored[0].sent_at == NOW
+
+
+async def test_targeted_dispatch_sends_only_requested_pending_outbox() -> None:
+    repository = MemoryDocumentRepository()
+    await repository.put_outbox_for_test(outbox())
+    await repository.put_outbox_for_test(outbox(OTHER_DOCUMENT_ID))
+    queue = Queue()
+    dispatcher = OutboxDispatcher(repository, queue, Clock())
+
+    assert await dispatcher.dispatch_outbox(f"ingest:{DOCUMENT_ID}:1") is True
+
+    assert [message.document_id for message in queue.messages] == [DOCUMENT_ID]
+    pending = await repository.list_pending_outbox(10)
+    assert [record.outbox_id for record, _ in pending] == [
+        f"ingest:{OTHER_DOCUMENT_ID}:1"
+    ]
+
+
+async def test_targeted_dispatch_missing_or_already_sent_is_a_noop() -> None:
+    repository = MemoryDocumentRepository()
+    await seed(repository)
+    queue = Queue()
+    dispatcher = OutboxDispatcher(repository, queue, Clock())
+
+    assert await dispatcher.dispatch_outbox("ingest:missing:1") is False
+    assert await dispatcher.dispatch_outbox(f"ingest:{DOCUMENT_ID}:1") is True
+    assert await dispatcher.dispatch_outbox(f"ingest:{DOCUMENT_ID}:1") is False
+    assert len(queue.messages) == 1
+
+
+async def test_targeted_crash_before_send_leaves_requested_outbox_pending() -> None:
+    repository = MemoryDocumentRepository()
+    await seed(repository)
+    dispatcher = OutboxDispatcher(repository, Queue(fail=True), Clock())
+
+    assert await dispatcher.dispatch_outbox(f"ingest:{DOCUMENT_ID}:1") is False
+    assert await repository.get_pending_outbox(f"ingest:{DOCUMENT_ID}:1") is not None
+
+
+async def test_targeted_crash_after_send_can_duplicate_requested_message() -> None:
+    repository = MarkFailsOnceRepository()
+    await seed(repository)
+    queue = Queue()
+    dispatcher = OutboxDispatcher(repository, queue, Clock())
+
+    assert await dispatcher.dispatch_outbox(f"ingest:{DOCUMENT_ID}:1") is False
+    assert await dispatcher.dispatch_outbox(f"ingest:{DOCUMENT_ID}:1") is True
+    assert len(queue.messages) == 2
+    assert queue.messages[0] == queue.messages[1]
 
 
 async def test_dispatcher_cancellation_finishes_cleanly() -> None:

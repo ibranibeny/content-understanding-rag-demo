@@ -133,6 +133,16 @@ def test_path_components_are_rejected_instead_of_reduced_to_basename(raw: str) -
     assert caught.value.retryable is False
 
 
+@pytest.mark.parametrize("control", ["\x00", "\n", "\u200b", "\u200d", "\ufeff"])
+@pytest.mark.parametrize("raw_template", ["{}report.pdf", "re{}port.pdf", "report{}.pdf"])
+def test_control_characters_are_rejected_instead_of_removed(
+    control: str, raw_template: str
+) -> None:
+    with pytest.raises(AppError) as caught:
+        sanitize_file_name(raw_template.format(control))
+    assert caught.value.code == "invalid_file_name"
+
+
 def test_name_is_normalized_to_nfc() -> None:
     decomposed = "Cafe\u0301.pdf"
     assert sanitize_file_name(decomposed) == normalize("NFC", decomposed)

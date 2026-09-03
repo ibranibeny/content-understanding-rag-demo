@@ -28,8 +28,10 @@ class Clock:
 class Blobs:
     def __init__(self) -> None:
         self.closed = 0
+        self.created: list[tuple[str, str]] = []
 
     async def create_upload(self, blob_name: str, content_type: str) -> UploadGrant:
+        self.created.append((blob_name, content_type))
         return UploadGrant(
             upload_url=f"https://account.blob.core.windows.net/uploads/{blob_name}?sig=secret",
             expires_at=NOW + timedelta(minutes=15),
@@ -56,8 +58,8 @@ class Dispatcher:
         self.started = asyncio.Event()
         self.cancelled = False
 
-    async def dispatch_once(self) -> int:
-        return 1
+    async def dispatch_outbox(self, outbox_id: str) -> bool:
+        return bool(outbox_id)
 
     async def run(self) -> None:
         self.started.set()
@@ -154,6 +156,29 @@ def test_init_rejects_non_basename_with_stable_nonretryable_error(file_name: str
         "correlationId": response.headers["x-correlation-id"],
     }
     assert documents.persisted_text_for_test() == ""
+
+
+@pytest.mark.parametrize("control", ["\x00", "\n", "\u200b", "\u200d", "\ufeff"])
+@pytest.mark.parametrize("file_name_template", ["{}a.pdf", "a{}b.pdf", "a{}.pdf"])
+def test_init_rejects_control_characters_with_stable_error_before_side_effects(
+    control: str, file_name_template: str
+) -> None:
+    client, documents = make_client()
+    blobs = client.app.state.upload_service._blobs
+
+    response = client.post(
+        "/api/uploads/init",
+        json={
+            "fileName": file_name_template.format(control),
+            "contentType": "application/pdf",
+            "sizeBytes": 8,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_file_name"
+    assert documents.persisted_text_for_test() == ""
+    assert blobs.created == []
 
 
 def test_complete_accepts_only_etag_and_returns_document_response() -> None:
