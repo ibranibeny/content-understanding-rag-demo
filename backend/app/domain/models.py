@@ -27,8 +27,23 @@ def _require_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _require_azure_etag(value: str) -> str:
+    opaque = value.removeprefix("W/")
+    if (
+        len(value) > 256
+        or len(opaque) < 3
+        or not opaque.startswith('"')
+        or not opaque.endswith('"')
+        or '"' in opaque[1:-1]
+        or any(character.isspace() or not character.isprintable() for character in opaque[1:-1])
+    ):
+        raise ValueError("invalid Azure ETag")
+    return value
+
+
 SessionKey = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 UtcDateTime = Annotated[datetime, AfterValidator(_require_utc)]
+AzureEtag = Annotated[str, StringConstraints(min_length=3), AfterValidator(_require_azure_etag)]
 
 
 class ContractModel(BaseModel):
@@ -195,7 +210,7 @@ class UploadInitResponse(ContractModel):
 
 
 class UploadCompleteRequest(ContractModel):
-    etag: str
+    etag: AzureEtag
 
 
 class DocumentResponse(ContractModel):

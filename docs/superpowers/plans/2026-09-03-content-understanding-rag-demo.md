@@ -486,6 +486,27 @@ for a legitimate Unicode basename remains required. This correction is atomic: i
 invariant at the existing pre-side-effect boundary and its service/API contracts. No modernization
 scenario skill root, Execution stage, or Breakdown Hints files were supplied for this review fix.
 
+**Code-quality remediation research (2026-09-03):** The current initialization sequence mutates the
+session repository, creates a document in a separately locked repository, and only then requests a SAS;
+its compensation path releases quota only after a successful document delete, so a failed delete leaves
+both records persisted. The in-memory repositories have independent backing dictionaries and cannot
+provide the same-partition atomic boundary required by the future Table adapter. Initialization will
+instead create its one-blob SAS before persistence and call a focused `reserve_and_create` operation
+through a shared application repository; `SessionService` remains the owner of quota validation and its
+five-attempt optimistic-concurrency retry. The Azure blob adapter's Office path currently calls
+`readall()` for the full declared size and returns those bytes, amplifying up to 100 MiB in memory. It
+will use conditional async chunks under a default two-call semaphore, write to a bounded
+`SpooledTemporaryFile`, validate the ZIP while the spool is open, and return only immutable entry
+metadata. The adapter also has no close boundary despite lazily owning Azure clients and credentials,
+while the FastAPI lifespan only cancels the dispatcher. Ownership-aware idempotent async close will be
+added and lifespan shutdown will order dispatcher cancellation before upload resource close. Outbox
+exceptions are swallowed without observability, and `UploadCompleteRequest.etag` accepts arbitrary text;
+safe structured logging and a strict 256-character quoted/weak-quoted ETag type close those gaps. Existing
+focused tests (146) pass before remediation. This is one coherent Task 4 hardening change: all findings
+concern the direct-upload transaction/resource boundary. No modernization scenario skill root, Execution
+stage, or Breakdown Hints files were supplied, so no scenario-specific decomposition rule can be evaluated
+and the requested Task 4 remediation is treated as atomic.
+
 **Files:**
 - Create: `backend/app/services/file_validation.py`
 - Create: `backend/app/services/blob_service.py`

@@ -19,6 +19,7 @@ from app.core.errors import (
 from app.core.readiness import ReadinessRegistry
 from app.domain.protocols import ReadinessCheck
 from app.repositories.memory_repository import (
+    MemoryApplicationRepository,
     MemoryDocumentRepository,
     MemorySessionRepository,
     MemoryWorkQueue,
@@ -60,10 +61,23 @@ def create_app(
         )
     actual_settings = settings or Settings()
     clock = SystemClock()
+    application_repository = MemoryApplicationRepository()
     actual_session_service = session_service or SessionService(
-        MemorySessionRepository(), clock, settings=actual_settings
+        application_repository.sessions,
+        clock,
+        settings=actual_settings,
+        session_documents=application_repository,
     )
-    documents = MemoryDocumentRepository()
+    if session_service is None:
+        documents = application_repository.documents
+    elif isinstance(actual_session_service.repository, MemorySessionRepository):
+        documents = actual_session_service.repository.document_repository()
+    elif upload_service is None:
+        raise ValueError(
+            "custom session_service requires upload_service and outbox_dispatcher"
+        )
+    else:
+        documents = MemoryDocumentRepository()
     queue = MemoryWorkQueue()
     actual_dispatcher = outbox_dispatcher or OutboxDispatcher(documents, queue, clock)
     actual_upload_service = upload_service or UploadService(
@@ -95,6 +109,7 @@ def create_app(
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+            await actual_upload_service.aclose()
 
     app = FastAPI(
         title="Content Understanding RAG Demo", version="0.1.0", lifespan=lifespan

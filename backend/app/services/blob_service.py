@@ -1,5 +1,8 @@
+import asyncio
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from io import BufferedIOBase
+from tempfile import SpooledTemporaryFile
 from typing import Any, Protocol, cast
 
 from azure.core import MatchConditions
@@ -11,14 +14,18 @@ from azure.storage.blob.aio import BlobServiceClient
 
 from app.core.errors import AppError
 from app.domain.protocols import BlobUploadGrant, Clock, VerifiedBlobUpload
+from app.services.file_validation import MAX_FILE_BYTES, TYPE_MAP, validate_office_package_stream
 
 SAS_CLOCK_SKEW = timedelta(minutes=5)
 SAS_LIFETIME = timedelta(minutes=15)
 HEADER_BYTES = 16
+OFFICE_SPOOL_MEMORY_BYTES = 4 * 1024 * 1024
 
 
 class Download(Protocol):
     async def readall(self) -> bytes: ...
+
+    def chunks(self) -> Any: ...
 
 
 class BlobClientLike(Protocol):
@@ -42,6 +49,7 @@ VerifiedUpload = VerifiedBlobUpload
 
 
 SasFactory = Callable[..., str]
+SpoolFactory = Callable[..., Any]
 
 
 class AzureBlobStore:
@@ -56,6 +64,10 @@ class AzureBlobStore:
         credential: AsyncTokenCredential | None = None,
         service_client: BlobServiceClientLike | None = None,
         sas_factory: SasFactory = generate_blob_sas,
+        spool_factory: SpoolFactory = SpooledTemporaryFile,
+        office_concurrency: int = 2,
+        own_credential: bool = False,
+        own_service_client: bool = False,
     ) -> None:
         self._account_name = account_name
         self._container_name = container_name
@@ -63,15 +75,24 @@ class AzureBlobStore:
         self._credential = credential
         self._service_client = service_client
         self._sas_factory = sas_factory
+        self._spool_factory = spool_factory
+        self._office_semaphore = asyncio.Semaphore(office_concurrency)
+        self._owns_credential = own_credential
+        self._owns_service_client = own_service_client
+        self._service_client_closed = False
+        self._credential_closed = False
 
     def _client(self) -> BlobServiceClientLike:
         if self._service_client is None:
-            self._credential = self._credential or DefaultAzureCredential()
+            if self._credential is None:
+                self._credential = DefaultAzureCredential()
+                self._owns_credential = True
             endpoint = f"https://{self._account_name}.blob.core.windows.net"
             self._service_client = cast(
                 BlobServiceClientLike,
                 BlobServiceClient(account_url=endpoint, credential=self._credential),
             )
+            self._owns_service_client = True
         return self._service_client
 
     async def create_upload(self, blob_name: str, content_type: str) -> UploadGrant:
@@ -134,6 +155,17 @@ class AzureBlobStore:
             )
         length = expected_size if office else min(expected_size, HEADER_BYTES)
         try:
+            if office:
+                async with self._office_semaphore:
+                    download = await blob.download_blob(
+                        offset=0,
+                        length=length,
+                        etag=expected_etag,
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                    return await self._verify_office(
+                        download, expected_size, expected_content_type
+                    )
             download = await blob.download_blob(
                 offset=0,
                 length=length,
@@ -147,5 +179,61 @@ class AzureBlobStore:
             raise AppError("upload_size_mismatch", 400, "The uploaded file size does not match.", False)
         return VerifiedUpload(
             header=content[:HEADER_BYTES],
-            package=content if office else None,
         )
+
+    async def _verify_office(
+        self, download: Download, expected_size: int, expected_content_type: str
+    ) -> VerifiedUpload:
+        if expected_size > MAX_FILE_BYTES:
+            raise AppError("upload_size_mismatch", 400, "The uploaded file size does not match.", False)
+        required_entry = next(
+            required for mime, _, required in TYPE_MAP.values() if mime == expected_content_type
+        )
+        assert required_entry is not None
+        with self._spool_factory(max_size=OFFICE_SPOOL_MEMORY_BYTES, mode="w+b") as spool:
+            total = 0
+            header = bytearray()
+            async for chunk in download.chunks():
+                total += len(chunk)
+                if total > expected_size or total > MAX_FILE_BYTES:
+                    raise AppError(
+                        "upload_size_mismatch", 400, "The uploaded file size does not match.", False
+                    )
+                if len(header) < HEADER_BYTES:
+                    header.extend(chunk[: HEADER_BYTES - len(header)])
+                spool.write(chunk)
+            if total != expected_size:
+                raise AppError(
+                    "upload_size_mismatch", 400, "The uploaded file size does not match.", False
+                )
+            spool.seek(0)
+            summary = validate_office_package_stream(
+                cast(BufferedIOBase, spool), required_entry
+            )
+            return VerifiedUpload(header=bytes(header), office_summary=summary)
+
+    async def aclose(self) -> None:
+        if (
+            self._owns_service_client
+            and not self._service_client_closed
+            and self._service_client is not None
+        ):
+            try:
+                await self._service_client.close()  # type: ignore[attr-defined]
+                self._service_client_closed = True
+            finally:
+                if (
+                    self._owns_credential
+                    and not self._credential_closed
+                    and self._credential is not None
+                ):
+                    await self._credential.close()
+                    self._credential_closed = True
+            return
+        if (
+            self._owns_credential
+            and not self._credential_closed
+            and self._credential is not None
+        ):
+                await self._credential.close()
+                self._credential_closed = True

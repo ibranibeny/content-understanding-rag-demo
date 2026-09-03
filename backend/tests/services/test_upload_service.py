@@ -7,7 +7,7 @@ import pytest
 
 from app.core.errors import AppError, ConcurrencyConflict
 from app.domain.models import DocumentRecord, DocumentState, UploadInitRequest
-from app.repositories.memory_repository import MemoryDocumentRepository, MemorySessionRepository
+from app.repositories.memory_repository import MemoryApplicationRepository, MemoryDocumentRepository
 from app.services.blob_service import UploadGrant, VerifiedUpload
 from app.services.session_service import SessionService
 from app.services.upload_service import UploadService
@@ -68,19 +68,26 @@ class Dispatcher:
         return 1
 
 
-class FailingCreateRepository(MemoryDocumentRepository):
-    async def create(self, document: DocumentRecord):  # type: ignore[no-untyped-def]
-        raise ConcurrencyConflict
+class FailingTransactionRepository(MemoryApplicationRepository):
+    async def reserve_and_create(
+        self, session_update: object, session_etag: str, document: DocumentRecord
+    ):  # type: ignore[no-untyped-def]
+        del session_update, session_etag, document
+        raise RuntimeError("transaction failed before commit")
 
 
-class BrokenCreateRepository(MemoryDocumentRepository):
-    async def create(self, document: DocumentRecord):  # type: ignore[no-untyped-def]
-        raise RuntimeError("storage unavailable")
+class ConflictOnceRepository(MemoryApplicationRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conflicts = 0
 
-
-class BrokenDeleteRepository(MemoryDocumentRepository):
-    async def delete(self, session_key: str, document_id: UUID, etag: str) -> None:
-        raise RuntimeError("delete unavailable")
+    async def reserve_and_create(
+        self, session_update: object, session_etag: str, document: DocumentRecord
+    ):  # type: ignore[no-untyped-def]
+        if self.conflicts == 0:
+            self.conflicts += 1
+            raise ConcurrencyConflict
+        return await super().reserve_and_create(session_update, session_etag, document)  # type: ignore[arg-type]
 
 
 class BrokenDispatcher(Dispatcher):
@@ -89,14 +96,9 @@ class BrokenDispatcher(Dispatcher):
         raise RuntimeError("outbox listing unavailable")
 
 
-class BrokenReleaseSessionService(SessionService):
-    async def release_document(self, session_key: str, size: int):  # type: ignore[no-untyped-def]
-        raise RuntimeError("quota store unavailable")
-
-
 class TransitionOnCommitRepository(MemoryDocumentRepository):
-    def __init__(self, state: DocumentState) -> None:
-        super().__init__()
+    def __init__(self, application: MemoryApplicationRepository, state: DocumentState) -> None:
+        super().__init__(application._state)
         self.state = state
 
     async def commit_queued_with_outbox(
@@ -110,24 +112,35 @@ class TransitionOnCommitRepository(MemoryDocumentRepository):
 
 
 async def setup(
-    documents: MemoryDocumentRepository | None = None,
+    documents: MemoryApplicationRepository | None = None,
     blobs: Blobs | None = None,
-) -> tuple[UploadService, MemoryDocumentRepository, MemorySessionRepository, Blobs, Dispatcher]:
-    sessions = MemorySessionRepository()
-    session_service = SessionService(sessions, Clock(), token_factory=lambda: TOKEN)
+    document_repository: MemoryDocumentRepository | None = None,
+) -> tuple[UploadService, MemoryDocumentRepository, object, Blobs, Dispatcher]:
+    repository = documents or MemoryApplicationRepository()
+    session_service = SessionService(
+        repository.sessions,
+        Clock(),
+        token_factory=lambda: TOKEN,
+        session_documents=repository,
+    )
     await session_service.issue()
-    actual_documents = documents or MemoryDocumentRepository()
     actual_blobs = blobs or Blobs()
     dispatcher = Dispatcher()
     service = UploadService(
         session_service,
-        actual_documents,
+        document_repository or repository.documents,
         actual_blobs,
         dispatcher,
         Clock(),
         document_id_factory=lambda: DOCUMENT_ID,
     )
-    return service, actual_documents, sessions, actual_blobs, dispatcher
+    return (
+        service,
+        document_repository or repository.documents,
+        repository.sessions,
+        actual_blobs,
+        dispatcher,
+    )
 
 
 async def test_init_reserves_quota_creates_record_and_uses_server_path() -> None:
@@ -187,8 +200,8 @@ async def test_init_rejects_path_components_before_any_side_effect(file_name: st
     assert blobs.created == []
 
 
-async def test_init_create_failure_rolls_back_quota() -> None:
-    service, _, sessions, _, _ = await setup(FailingCreateRepository())
+async def test_init_transaction_failure_leaves_quota_and_documents_unchanged() -> None:
+    service, documents, sessions, _, _ = await setup(FailingTransactionRepository())
 
     with pytest.raises(AppError) as caught:
         await service.initialize(
@@ -199,23 +212,10 @@ async def test_init_create_failure_rolls_back_quota() -> None:
     quota = await sessions.get(SESSION_KEY)
     assert quota is not None
     assert (quota[0].document_count, quota[0].total_bytes) == (0, 0)
+    assert await documents.list_for_session(SESSION_KEY) == []
 
 
-async def test_init_generic_create_failure_also_rolls_back_quota() -> None:
-    service, _, sessions, _, _ = await setup(BrokenCreateRepository())
-
-    with pytest.raises(AppError) as caught:
-        await service.initialize(
-            SESSION_KEY,
-            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
-        )
-    assert caught.value.code == "document_create_failed"
-    quota = await sessions.get(SESSION_KEY)
-    assert quota is not None
-    assert (quota[0].document_count, quota[0].total_bytes) == (0, 0)
-
-
-async def test_init_sas_failure_removes_document_and_rolls_back_quota() -> None:
+async def test_init_sas_failure_needs_no_compensation_and_leaves_state_unchanged() -> None:
     service, documents, sessions, _, _ = await setup(blobs=BrokenGrantBlobs())
 
     with pytest.raises(AppError) as caught:
@@ -230,63 +230,22 @@ async def test_init_sas_failure_removes_document_and_rolls_back_quota() -> None:
     assert (quota[0].document_count, quota[0].total_bytes) == (0, 0)
 
 
-async def test_init_sas_failure_releases_quota_even_when_document_cleanup_fails() -> None:
-    service, _, sessions, _, _ = await setup(
-        documents=BrokenDeleteRepository(), blobs=BrokenGrantBlobs()
+async def test_init_conflict_retries_transaction_without_persisting_duplicate_document() -> None:
+    repository = ConflictOnceRepository()
+    service, documents, sessions, blobs, _ = await setup(repository)
+
+    response = await service.initialize(
+        SESSION_KEY,
+        UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
     )
-    with pytest.raises(AppError) as caught:
-        await service.initialize(
-            SESSION_KEY,
-            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
-        )
-    assert caught.value.code == "upload_grant_failed"
+
+    assert response.document_id == DOCUMENT_ID
+    assert repository.conflicts == 1
+    assert len(blobs.created) == 1
+    assert len(await documents.list_for_session(SESSION_KEY)) == 1
     quota = await sessions.get(SESSION_KEY)
     assert quota is not None
     assert (quota[0].document_count, quota[0].total_bytes) == (1, 8)
-
-
-async def test_init_sas_failure_stays_stable_when_quota_release_fails() -> None:
-    sessions = MemorySessionRepository()
-    session_service = BrokenReleaseSessionService(sessions, Clock(), token_factory=lambda: TOKEN)
-    await session_service.issue()
-    documents = MemoryDocumentRepository()
-    service = UploadService(
-        session_service,
-        documents,
-        BrokenGrantBlobs(),
-        Dispatcher(),
-        Clock(),
-        document_id_factory=lambda: DOCUMENT_ID,
-    )
-
-    with pytest.raises(AppError) as caught:
-        await service.initialize(
-            SESSION_KEY,
-            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
-        )
-    assert caught.value.code == "upload_grant_failed"
-    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
-
-
-async def test_create_failure_stays_stable_when_quota_rollback_fails() -> None:
-    sessions = MemorySessionRepository()
-    session_service = BrokenReleaseSessionService(sessions, Clock(), token_factory=lambda: TOKEN)
-    await session_service.issue()
-    service = UploadService(
-        session_service,
-        BrokenCreateRepository(),
-        Blobs(),
-        Dispatcher(),
-        Clock(),
-        document_id_factory=lambda: DOCUMENT_ID,
-    )
-
-    with pytest.raises(AppError) as caught:
-        await service.initialize(
-            SESSION_KEY,
-            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
-        )
-    assert caught.value.code == "document_create_failed"
 
 
 async def test_init_enforces_session_quota() -> None:
@@ -335,11 +294,16 @@ async def test_complete_verifies_blob_and_atomically_queues_exact_outbox() -> No
     assert dispatcher.calls == 1
 
 
-async def test_complete_succeeds_when_opportunistic_dispatch_fails() -> None:
-    sessions = MemorySessionRepository()
-    session_service = SessionService(sessions, Clock(), token_factory=lambda: TOKEN)
+async def test_complete_succeeds_and_safely_logs_when_opportunistic_dispatch_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = MemoryApplicationRepository()
+    sessions = repository.sessions
+    session_service = SessionService(
+        sessions, Clock(), token_factory=lambda: TOKEN, session_documents=repository
+    )
     await session_service.issue()
-    documents = MemoryDocumentRepository()
+    documents = repository.documents
     service = UploadService(
         session_service,
         documents,
@@ -352,11 +316,16 @@ async def test_complete_succeeds_when_opportunistic_dispatch_fails() -> None:
         SESSION_KEY, UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8)
     )
 
-    response = await service.complete(SESSION_KEY, DOCUMENT_ID, '"etag"', CORRELATION_ID)
+    with caplog.at_level("WARNING"):
+        response = await service.complete(SESSION_KEY, DOCUMENT_ID, '"etag"', CORRELATION_ID)
 
     assert response.state == DocumentState.QUEUED
     pending = await documents.list_pending_outbox(10)
     assert len(pending) == 1
+    assert "opportunistic_outbox_dispatch_failed" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert SESSION_KEY not in caplog.text
+    assert "sig=secret" not in caplog.text
 
 
 async def test_repeated_complete_is_idempotent_and_redispatches_without_new_outbox() -> None:
@@ -401,8 +370,11 @@ async def test_invalid_state_cannot_be_completed() -> None:
 async def test_concurrent_nonqueued_transition_is_not_reported_as_completed(
     state: DocumentState,
 ) -> None:
-    documents = TransitionOnCommitRepository(state)
-    service, _, _, _, _ = await setup(documents=documents)
+    repository = MemoryApplicationRepository()
+    documents = TransitionOnCommitRepository(repository, state)
+    service, _, _, _, _ = await setup(
+        documents=repository, document_repository=documents
+    )
     await service.initialize(
         SESSION_KEY, UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8)
     )

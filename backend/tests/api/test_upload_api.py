@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
-from app.repositories.memory_repository import MemoryDocumentRepository, MemorySessionRepository
+from app.repositories.memory_repository import MemoryApplicationRepository, MemoryDocumentRepository
 from app.services.blob_service import UploadGrant, VerifiedUpload
 from app.services.session_service import SessionService
 from app.services.upload_service import UploadService
@@ -26,6 +26,9 @@ class Clock:
 
 
 class Blobs:
+    def __init__(self) -> None:
+        self.closed = 0
+
     async def create_upload(self, blob_name: str, content_type: str) -> UploadGrant:
         return UploadGrant(
             upload_url=f"https://account.blob.core.windows.net/uploads/{blob_name}?sig=secret",
@@ -43,6 +46,9 @@ class Blobs:
         office: bool,
     ) -> VerifiedUpload:
         return VerifiedUpload(header=b"%PDF-1.7", package=None)
+
+    async def aclose(self) -> None:
+        self.closed += 1
 
 
 class Dispatcher:
@@ -64,11 +70,16 @@ class Dispatcher:
 
 def make_client() -> tuple[TestClient, MemoryDocumentRepository]:
     settings = Settings(app_mode="test")
-    sessions = MemorySessionRepository()
+    repository = MemoryApplicationRepository()
+    sessions = repository.sessions
     session_service = SessionService(
-        sessions, Clock(), settings=settings, token_factory=iter((TOKEN, OTHER_TOKEN)).__next__
+        sessions,
+        Clock(),
+        settings=settings,
+        token_factory=iter((TOKEN, OTHER_TOKEN)).__next__,
+        session_documents=repository,
     )
-    documents = MemoryDocumentRepository()
+    documents = repository.documents
     dispatcher = Dispatcher()
     upload_service = UploadService(
         session_service,
@@ -164,6 +175,14 @@ def test_complete_accepts_only_etag_and_returns_document_response() -> None:
     assert not ({"sessionKey", "blobName", "uploadUrl"} & response.json().keys())
 
 
+@pytest.mark.parametrize("etag", ["", "x" * 257, '"bad space"', '"bad\nline"'])
+def test_complete_rejects_invalid_etag(etag: str) -> None:
+    client, _ = make_client()
+    response = client.post(f"/api/uploads/{DOCUMENT_ID}/complete", json={"etag": etag})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
+
+
 def test_init_rejects_client_blob_path_and_unknown_fields() -> None:
     client, _ = make_client()
     response = client.post(
@@ -207,9 +226,16 @@ async def _ready() -> bool:
 
 def test_production_upload_cookie_has_all_security_attributes() -> None:
     settings = Settings(app_mode="production")
-    sessions = MemorySessionRepository()
-    session_service = SessionService(sessions, Clock(), settings=settings, token_factory=lambda: TOKEN)
-    documents = MemoryDocumentRepository()
+    repository = MemoryApplicationRepository()
+    sessions = repository.sessions
+    session_service = SessionService(
+        sessions,
+        Clock(),
+        settings=settings,
+        token_factory=lambda: TOKEN,
+        session_documents=repository,
+    )
+    documents = repository.documents
     dispatcher = Dispatcher()
     uploads = UploadService(
         session_service,
@@ -243,11 +269,19 @@ def test_production_upload_cookie_has_all_security_attributes() -> None:
 
 def test_lifespan_starts_and_cleanly_cancels_injected_dispatcher() -> None:
     settings = Settings(app_mode="test")
-    sessions = MemorySessionRepository()
-    session_service = SessionService(sessions, Clock(), settings=settings, token_factory=lambda: TOKEN)
-    documents = MemoryDocumentRepository()
+    repository = MemoryApplicationRepository()
+    sessions = repository.sessions
+    session_service = SessionService(
+        sessions,
+        Clock(),
+        settings=settings,
+        token_factory=lambda: TOKEN,
+        session_documents=repository,
+    )
+    documents = repository.documents
     dispatcher = Dispatcher()
-    uploads = UploadService(session_service, documents, Blobs(), dispatcher, Clock())
+    blobs = Blobs()
+    uploads = UploadService(session_service, documents, blobs, dispatcher, Clock())
     app = create_app(
         settings=settings,
         session_service=session_service,
@@ -259,16 +293,33 @@ def test_lifespan_starts_and_cleanly_cancels_injected_dispatcher() -> None:
         assert dispatcher.started.is_set()
         assert dispatcher.cancelled is False
     assert dispatcher.cancelled is True
+    assert blobs.closed == 1
 
 
 @pytest.mark.parametrize("injected", ["upload_service", "outbox_dispatcher"])
 def test_factory_rejects_incoherent_partial_upload_dependency_injection(injected: str) -> None:
     settings = Settings(app_mode="test")
-    sessions = MemorySessionRepository()
-    session_service = SessionService(sessions, Clock(), settings=settings, token_factory=lambda: TOKEN)
-    documents = MemoryDocumentRepository()
+    repository = MemoryApplicationRepository()
+    sessions = repository.sessions
+    session_service = SessionService(
+        sessions,
+        Clock(),
+        settings=settings,
+        token_factory=lambda: TOKEN,
+        session_documents=repository,
+    )
+    documents = repository.documents
     dispatcher = Dispatcher()
     uploads = UploadService(session_service, documents, Blobs(), dispatcher, Clock())
     kwargs = {injected: uploads if injected == "upload_service" else dispatcher}
     with pytest.raises(ValueError, match="upload_service and outbox_dispatcher"):
         create_app(settings=settings, session_service=session_service, **kwargs)  # type: ignore[arg-type]
+
+
+def test_factory_shares_injected_memory_session_state_with_default_upload_graph() -> None:
+    settings = Settings(app_mode="test")
+    sessions = MemoryApplicationRepository().sessions
+    session_service = SessionService(sessions, Clock(), settings=settings)
+
+    app = create_app(settings=settings, session_service=session_service)
+    assert app.state.session_service is session_service

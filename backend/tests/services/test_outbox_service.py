@@ -89,6 +89,25 @@ async def test_crash_before_send_leaves_pending() -> None:
     assert [item.outbox_id for item, _ in pending] == [f"ingest:{DOCUMENT_ID}:1"]
 
 
+async def test_dispatch_failure_logs_only_safe_metadata(caplog: pytest.LogCaptureFixture) -> None:
+    repository = MemoryDocumentRepository()
+    await seed(repository)
+    secret = "sig=secret-session-payload"
+    dispatcher = OutboxDispatcher(repository, Queue(fail=True), Clock())
+
+    with caplog.at_level("WARNING"):
+        await dispatcher.dispatch_once()
+
+    text = caplog.text
+    assert "outbox_dispatch_failed" in text
+    assert f"ingest:{DOCUMENT_ID}:1" in text
+    assert "ingestion" in text
+    assert "RuntimeError" in text
+    assert SESSION_KEY not in text
+    assert secret not in text
+    assert "blobName" not in text
+
+
 async def test_crash_after_send_can_duplicate_same_deterministic_message() -> None:
     repository = MarkFailsOnceRepository()
     await seed(repository)

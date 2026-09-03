@@ -9,8 +9,8 @@ from hashlib import sha256
 
 from app.core.config import SESSION_LIFETIME_HOURS, Settings
 from app.core.errors import AppError, ConcurrencyConflict
-from app.domain.models import SessionRecord, SessionResponse
-from app.domain.protocols import Clock, SessionRepository
+from app.domain.models import DocumentRecord, SessionRecord, SessionResponse, VersionedDocument
+from app.domain.protocols import Clock, SessionDocumentRepository, SessionRepository
 
 TOKEN_BYTES = 32
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
@@ -37,12 +37,20 @@ class SessionService:
         settings: Settings | None = None,
         token_factory: Callable[[], bytes] | None = None,
         concurrency_attempts: int = 5,
+        session_documents: SessionDocumentRepository | None = None,
     ) -> None:
         self._repository = repository
         self._clock = clock or SystemClock()
         self._settings = settings or Settings()
         self._token_factory = token_factory or (lambda: secrets.token_bytes(TOKEN_BYTES))
         self._concurrency_attempts = concurrency_attempts
+        self._session_documents = session_documents or (
+            repository if isinstance(repository, SessionDocumentRepository) else None
+        )
+
+    @property
+    def repository(self) -> SessionRepository:
+        return self._repository
 
     @property
     def settings(self) -> Settings:
@@ -104,6 +112,44 @@ class SessionService:
             )
 
         return await self._update(session_key, reserve)
+
+    async def reserve_and_create(
+        self,
+        session_key: str,
+        size: int,
+        document_factory: Callable[[SessionRecord], DocumentRecord],
+    ) -> tuple[SessionRecord, VersionedDocument]:
+        if size <= 0:
+            raise AppError("invalid_document_size", 400, "Document size must be positive.", False)
+        repository = self._session_documents
+        if repository is None:
+            raise TypeError("session repository does not support atomic document creation")
+        for _ in range(self._concurrency_attempts):
+            stored = await self._repository.get(session_key)
+            if stored is None:
+                raise AppError("session_not_found", 401, "The session was not found.", False)
+            record, etag = stored
+            if record.expires_at <= self._clock.now():
+                raise AppError("session_expired", 401, "The session has expired.", False)
+            if record.document_count >= self._settings.max_documents:
+                raise AppError(
+                    "document_quota_exceeded", 409, "The session document limit was reached.", False
+                )
+            if record.total_bytes + size > self._settings.max_session_bytes:
+                raise AppError(
+                    "storage_quota_exceeded", 409, "The session storage limit was reached.", False
+                )
+            updated = record.model_copy(
+                update={
+                    "document_count": record.document_count + 1,
+                    "total_bytes": record.total_bytes + size,
+                }
+            )
+            try:
+                return await repository.reserve_and_create(updated, etag, document_factory(record))
+            except ConcurrencyConflict:
+                continue
+        raise self._concurrency_error()
 
     async def release_document(self, session_key: str, size: int) -> SessionRecord:
         if size <= 0:

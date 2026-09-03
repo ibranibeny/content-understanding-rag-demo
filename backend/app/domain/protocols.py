@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import JsonValue
@@ -16,6 +16,13 @@ from app.domain.models import (
     SessionRecord,
     VersionedDocument,
 )
+
+
+@runtime_checkable
+class SessionDocumentRepository(Protocol):
+    async def reserve_and_create(
+        self, session_update: SessionRecord, session_etag: str, document: DocumentRecord
+    ) -> tuple[SessionRecord, VersionedDocument]: ...
 
 
 class DocumentRepository(Protocol):
@@ -54,9 +61,17 @@ class BlobUploadGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class OfficePackageSummary:
+    entry_names: tuple[str, ...]
+    entry_count: int
+    total_uncompressed_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class VerifiedBlobUpload:
     header: bytes
-    package: bytes | None
+    package: bytes | None = None
+    office_summary: OfficePackageSummary | None = None
 
 
 class WorkQueue(Protocol):
@@ -77,6 +92,8 @@ class UploadBlobStore(Protocol):
         *,
         office: bool,
     ) -> VerifiedBlobUpload: ...
+
+    async def aclose(self) -> None: ...
 
 
 class BlobStore(UploadBlobStore, Protocol):

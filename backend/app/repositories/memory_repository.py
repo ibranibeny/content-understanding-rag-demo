@@ -13,11 +13,20 @@ from app.domain.models import (
 )
 
 
+class _MemoryState:
+    def __init__(self) -> None:
+        self.sessions: dict[str, tuple[SessionRecord, int]] = {}
+        self.documents: dict[tuple[str, str], tuple[DocumentRecord, int]] = {}
+        self.outbox: dict[str, tuple[OutboxRecord, int]] = {}
+        self.lock = asyncio.Lock()
+
+
 class MemorySessionRepository:
     """Process-local session storage with opaque optimistic-concurrency versions."""
 
-    def __init__(self) -> None:
-        self._sessions: dict[str, tuple[SessionRecord, int]] = {}
+    def __init__(self, state: _MemoryState | None = None) -> None:
+        self._state = state or _MemoryState()
+        self._sessions = self._state.sessions
 
     @staticmethod
     def _etag(version: int) -> str:
@@ -47,14 +56,28 @@ class MemorySessionRepository:
         self._sessions[session.session_key] = (session, next_version)
         return session, self._etag(next_version)
 
+    def document_repository(self) -> "MemoryDocumentRepository":
+        return MemoryDocumentRepository(self._state)
+
+    async def reserve_and_create(
+        self,
+        session_update: SessionRecord,
+        session_etag: str,
+        document: DocumentRecord,
+    ) -> tuple[SessionRecord, VersionedDocument]:
+        return await _reserve_and_create(
+            self._state, session_update, session_etag, document
+        )
+
 
 class MemoryDocumentRepository:
     """Process-local document/outbox store with transaction-like locking for tests and local use."""
 
-    def __init__(self) -> None:
-        self._documents: dict[tuple[str, str], tuple[DocumentRecord, int]] = {}
-        self._outbox: dict[str, tuple[OutboxRecord, int]] = {}
-        self._lock = asyncio.Lock()
+    def __init__(self, state: _MemoryState | None = None) -> None:
+        self._state = state or _MemoryState()
+        self._documents = self._state.documents
+        self._outbox = self._state.outbox
+        self._lock = self._state.lock
 
     @staticmethod
     def _etag(version: int) -> str:
@@ -155,6 +178,51 @@ class MemoryDocumentRepository:
         documents = [record.model_dump_json() for record, _ in self._documents.values()]
         outbox = [record.model_dump_json() for record, _ in self._outbox.values()]
         return "".join((*documents, *outbox))
+
+
+class MemoryApplicationRepository:
+    """Shared backing state with distinct public session and document repositories."""
+
+    def __init__(self) -> None:
+        self._state = _MemoryState()
+        self.sessions = MemorySessionRepository(self._state)
+        self.documents = MemoryDocumentRepository(self._state)
+
+    async def reserve_and_create(
+        self,
+        session_update: SessionRecord,
+        session_etag: str,
+        document: DocumentRecord,
+    ) -> tuple[SessionRecord, VersionedDocument]:
+        return await _reserve_and_create(
+            self._state, session_update, session_etag, document
+        )
+
+
+async def _reserve_and_create(
+    state: _MemoryState,
+    session_update: SessionRecord,
+    session_etag: str,
+    document: DocumentRecord,
+) -> tuple[SessionRecord, VersionedDocument]:
+    async with state.lock:
+        stored_session = state.sessions.get(session_update.session_key)
+        document_key = MemoryDocumentRepository._key(
+            document.session_key, document.document_id
+        )
+        if (
+            stored_session is None
+            or session_etag != MemorySessionRepository._etag(stored_session[1])
+            or document.session_key != session_update.session_key
+            or document_key in state.documents
+        ):
+            raise ConcurrencyConflict
+        session_version = stored_session[1] + 1
+        state.sessions[session_update.session_key] = (session_update, session_version)
+        state.documents[document_key] = (document, 1)
+        return session_update, VersionedDocument(
+            value=document, etag=MemoryDocumentRepository._etag(1)
+        )
 
 
 class MemoryWorkQueue:

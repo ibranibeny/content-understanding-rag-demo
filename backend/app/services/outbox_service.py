@@ -1,7 +1,10 @@
 import asyncio
+import logging
 
 from app.domain.models import ContentResultCleanupMessage, IngestionMessage
 from app.domain.protocols import Clock, DocumentRepository, WorkQueue
+
+logger = logging.getLogger(__name__)
 
 
 class OutboxDispatcher:
@@ -35,7 +38,13 @@ class OutboxDispatcher:
                 await self._repository.mark_outbox_sent(
                     record.outbox_id, etag, self._clock.now()
                 )
-            except Exception:  # noqa: BLE001 - pending row is the durable retry signal
+            except Exception as exc:  # noqa: BLE001 - pending row is the durable retry signal
+                logger.warning(
+                    "outbox_dispatch_failed outbox_id=%s kind=%s exception_class=%s",
+                    record.outbox_id,
+                    record.kind,
+                    type(exc).__name__,
+                )
                 failed = True
             if failed:
                 continue
@@ -47,7 +56,11 @@ class OutboxDispatcher:
             failed = False
             try:
                 await self.dispatch_once()
-            except Exception:  # noqa: BLE001 - next cycle retries the durable pending rows
+            except Exception as exc:  # noqa: BLE001 - next cycle retries the durable pending rows
+                logger.warning(
+                    "outbox_dispatch_cycle_failed exception_class=%s",
+                    type(exc).__name__,
+                )
                 failed = True
             if failed:
                 await asyncio.sleep(self._interval_seconds)

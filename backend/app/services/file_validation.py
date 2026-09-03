@@ -1,11 +1,13 @@
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
-from io import BytesIO
+from io import BufferedIOBase, BytesIO
 from pathlib import PurePosixPath
 from re import fullmatch
-from zipfile import BadZipFile, ZipFile
+from zipfile import BadZipFile, ZipFile, ZipInfo
 
 from app.core.errors import AppError
+from app.domain.protocols import OfficePackageSummary
 
 MAX_FILE_BYTES = 100 * 1024 * 1024
 MAX_FILE_NAME_LENGTH = 120
@@ -102,12 +104,29 @@ def validate_uploaded_file(
     declared: DeclaredUpload,
     header: bytes,
     office_package: bytes | None = None,
+    office_summary: OfficePackageSummary | None = None,
 ) -> None:
     _, signature, required_office_entry = TYPE_MAP[declared.extension]
     if not header.startswith(signature):
         raise AppError("invalid_file_content", 400, "The uploaded file signature is invalid.", False)
     if required_office_entry is not None:
-        _validate_office_package(office_package, required_office_entry)
+        if office_summary is not None:
+            if required_office_entry not in office_summary.entry_names:
+                raise _invalid_office_package()
+        else:
+            _validate_office_package(office_package, required_office_entry)
+
+
+def validate_office_package_stream(
+    package: BufferedIOBase, required_entry: str
+) -> OfficePackageSummary:
+    try:
+        with ZipFile(package) as archive:
+            return _validate_office_entries(archive.infolist(), required_entry)
+    except (BadZipFile, OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, AppError):
+            raise
+        raise _invalid_office_package() from None
 
 
 def _validate_office_package(package: bytes | None, required_entry: str) -> None:
@@ -115,41 +134,53 @@ def _validate_office_package(package: bytes | None, required_entry: str) -> None
         raise _invalid_office_package()
     try:
         with ZipFile(BytesIO(package)) as archive:
-            entries = archive.infolist()
-            if not entries or len(entries) > MAX_OFFICE_ENTRIES:
-                raise _invalid_office_package()
-            names: set[str] = set()
-            total_uncompressed = 0
-            for entry in entries:
-                if entry.flag_bits & 0x1:
-                    raise _invalid_office_package()
-                normalized = entry.filename.replace("\\", "/")
-                path = PurePosixPath(normalized)
-                if (
-                    not normalized
-                    or path.is_absolute()
-                    or ".." in path.parts
-                    or normalized.startswith("/")
-                    or fullmatch(r"[A-Za-z]:/.*", normalized) is not None
-                    or any(unicodedata.category(character) in {"Cc", "Cf"} for character in normalized)
-                    or normalized in names
-                ):
-                    raise _invalid_office_package()
-                total_uncompressed += entry.file_size
-                if total_uncompressed > MAX_OFFICE_UNCOMPRESSED_BYTES:
-                    raise _invalid_office_package()
-                if entry.compress_size == 0:
-                    if entry.file_size > 0:
-                        raise _invalid_office_package()
-                elif entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO:
-                    raise _invalid_office_package()
-                names.add(normalized)
-            if "[Content_Types].xml" not in names or required_entry not in names:
-                raise _invalid_office_package()
+            _validate_office_entries(archive.infolist(), required_entry)
     except (BadZipFile, OSError, RuntimeError, ValueError) as exc:
         if isinstance(exc, AppError):
             raise
         raise _invalid_office_package() from None
+
+
+def _validate_office_entries(
+    entries: Iterable[ZipInfo], required_entry: str
+) -> OfficePackageSummary:
+    entries = tuple(entries)
+    if not entries or len(entries) > MAX_OFFICE_ENTRIES:
+        raise _invalid_office_package()
+    names: set[str] = set()
+    total_uncompressed = 0
+    for raw_entry in entries:
+        entry = raw_entry
+        if entry.flag_bits & 0x1:
+            raise _invalid_office_package()
+        normalized = entry.filename.replace("\\", "/")
+        path = PurePosixPath(normalized)
+        if (
+            not normalized
+            or path.is_absolute()
+            or ".." in path.parts
+            or normalized.startswith("/")
+            or fullmatch(r"[A-Za-z]:/.*", normalized) is not None
+            or any(unicodedata.category(character) in {"Cc", "Cf"} for character in normalized)
+            or normalized in names
+        ):
+            raise _invalid_office_package()
+        total_uncompressed += entry.file_size
+        if total_uncompressed > MAX_OFFICE_UNCOMPRESSED_BYTES:
+            raise _invalid_office_package()
+        if entry.compress_size == 0:
+            if entry.file_size > 0:
+                raise _invalid_office_package()
+        elif entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO:
+            raise _invalid_office_package()
+        names.add(normalized)
+    if "[Content_Types].xml" not in names or required_entry not in names:
+        raise _invalid_office_package()
+    return OfficePackageSummary(
+        entry_names=tuple(sorted(names)),
+        entry_count=len(entries),
+        total_uncompressed_bytes=total_uncompressed,
+    )
 
 
 def _invalid_office_package() -> AppError:

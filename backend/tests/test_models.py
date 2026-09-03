@@ -476,6 +476,29 @@ def test_all_api_dtos_validate_aliases_and_serialize_camel_case_by_default() -> 
 
 
 @pytest.mark.parametrize(
+    "etag",
+    [
+        "",
+        '""',
+        "x" * 257,
+        '"has space"',
+        '"has\ttab"',
+        '"has\rreturn"',
+        '"has\nline"',
+        '"has\u00a0nbsp"',
+    ],
+)
+def test_completion_etag_rejects_empty_oversized_whitespace_and_controls(etag: str) -> None:
+    with pytest.raises(ValidationError):
+        UploadCompleteRequest(etag=etag)
+
+
+@pytest.mark.parametrize("etag", ['"0x8DABCDEF"', 'W/"datetime\'2026-09-03T10:00:00Z\'"'])
+def test_completion_etag_accepts_azure_opaque_forms(etag: str) -> None:
+    assert UploadCompleteRequest(etag=etag).etag == etag
+
+
+@pytest.mark.parametrize(
     ("model_type", "factory"),
     [
         (SessionRecord, session_record),

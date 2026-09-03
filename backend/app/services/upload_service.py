@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -9,12 +10,15 @@ from app.domain.models import (
     DocumentState,
     IngestionMessage,
     OutboxRecord,
+    SessionRecord,
     UploadInitRequest,
     UploadInitResponse,
 )
 from app.domain.protocols import Clock, DocumentRepository, UploadBlobStore
 from app.services.file_validation import validate_declared_upload, validate_uploaded_file
 from app.services.session_service import SessionService
+
+logger = logging.getLogger(__name__)
 
 
 class Dispatcher(Protocol):
@@ -48,64 +52,46 @@ class UploadService:
             request.size_bytes,
             max_file_bytes=self._sessions.settings.max_file_bytes,
         )
-        session = await self._sessions.reserve_document(session_key, declared.size_bytes)
         document_id = self._document_id_factory()
         now = self._clock.now()
         blob_name = f"uploads/{session_key}/{document_id}/{declared.file_name}"
-        document = DocumentRecord(
-            session_key=session_key,
-            document_id=document_id,
-            file_name=declared.file_name,
-            content_type=declared.content_type,
-            size_bytes=declared.size_bytes,
-            blob_name=blob_name,
-            state=DocumentState.AWAITING_UPLOAD,
-            created_at=now,
-            updated_at=now,
-            expires_at=session.expires_at,
-        )
         try:
-            created = await self._documents.create(document)
+            grant = await self._blobs.create_upload(blob_name, declared.content_type)
+        except Exception as grant_error:
+            raise AppError(
+                "upload_grant_failed",
+                503,
+                "The upload authorization could not be created.",
+                True,
+            ) from grant_error
+
+        def build_document(session: SessionRecord) -> DocumentRecord:
+            return DocumentRecord(
+                session_key=session_key,
+                document_id=document_id,
+                file_name=declared.file_name,
+                content_type=declared.content_type,
+                size_bytes=declared.size_bytes,
+                blob_name=blob_name,
+                state=DocumentState.AWAITING_UPLOAD,
+                created_at=now,
+                updated_at=now,
+                expires_at=session.expires_at,
+            )
+
+        try:
+            await self._sessions.reserve_and_create(
+                session_key, declared.size_bytes, build_document
+            )
+        except AppError:
+            raise
         except Exception as create_error:
-            try:
-                await self._sessions.release_document(session_key, declared.size_bytes)
-            except Exception as rollback_error:  # noqa: BLE001 - retain the stable API boundary
-                create_error = ExceptionGroup(
-                    "document creation and quota rollback failed",
-                    [create_error, rollback_error],
-                )
             raise AppError(
                 "document_create_failed",
                 503,
                 "The document upload could not be initialized.",
                 True,
             ) from create_error
-        try:
-            grant = await self._blobs.create_upload(blob_name, declared.content_type)
-        except Exception as grant_error:  # noqa: BLE001 - complete compensation follows
-            compensation_errors: list[Exception] = []
-            document_deleted = False
-            try:
-                await self._documents.delete(session_key, document_id, created.etag)
-                document_deleted = True
-            except Exception as exc:  # noqa: BLE001 - quota compensation must still run
-                compensation_errors.append(exc)
-            if document_deleted:
-                try:
-                    await self._sessions.release_document(session_key, declared.size_bytes)
-                except Exception as exc:  # noqa: BLE001 - stable boundary error is mandatory
-                    compensation_errors.append(exc)
-            internal_cause: BaseException = grant_error
-            if compensation_errors:
-                internal_cause = ExceptionGroup(
-                    "upload grant compensation failed", compensation_errors
-                )
-            raise AppError(
-                "upload_grant_failed",
-                503,
-                "The upload authorization could not be created.",
-                True,
-            ) from internal_cause
         return UploadInitResponse(
             upload_url=grant.upload_url,
             document_id=document_id,
@@ -145,7 +131,9 @@ class UploadService:
             document.content_type,
             office=declared.is_office,
         )
-        validate_uploaded_file(declared, verified.header, verified.package)
+        validate_uploaded_file(
+            declared, verified.header, verified.package, verified.office_summary
+        )
         now = self._clock.now()
         queued = document.model_copy(update={"state": DocumentState.QUEUED, "updated_at": now})
         message = IngestionMessage(
@@ -190,8 +178,15 @@ class UploadService:
     async def _try_dispatch(self) -> None:
         try:
             await self._dispatcher.dispatch_once()
-        except Exception:  # noqa: BLE001 - the durable outbox is retried by the lifespan loop
+        except Exception as exc:  # noqa: BLE001 - durable outbox remains pending
+            logger.warning(
+                "opportunistic_outbox_dispatch_failed exception_class=%s",
+                type(exc).__name__,
+            )
             return
+
+    async def aclose(self) -> None:
+        await self._blobs.aclose()
 
     @staticmethod
     def _response(document: DocumentRecord) -> DocumentResponse:
