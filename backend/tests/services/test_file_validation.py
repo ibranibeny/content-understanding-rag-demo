@@ -278,12 +278,11 @@ def test_office_package_rejects_ambiguous_or_unsafe_entry_names(entry_name: str)
 
 
 def test_office_package_rejects_duplicate_normalized_entry_names() -> None:
-    with pytest.warns(UserWarning):
-        package = office_package(
-            ("[Content_Types].xml", b"types"),
-            ("word/document.xml", b"doc"),
-            ("word\\document.xml", b"ambiguous"),
-        )
+    package = office_package(
+        ("[Content_Types].xml", b"types"),
+        ("word/document.xml", b"doc"),
+        ("word\\document.xml", b"ambiguous"),
+    )
     declared = validate_declared_upload(
         "a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", len(package)
     )
