@@ -52,7 +52,11 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
             "correlationId": correlation_id,
         }
     }
-    return JSONResponse(status_code=exc.status_code, content=envelope)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=envelope,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def request_validation_error_handler(

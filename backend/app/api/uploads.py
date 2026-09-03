@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from app.api.dependencies import require_expected_origin
 from app.core.config import (
     SESSION_COOKIE_HTTP_ONLY,
     SESSION_COOKIE_MAX_AGE_SECONDS,
@@ -47,7 +48,11 @@ async def _resolve_session(request: Request, response: Response, service: Sessio
     return resolved.record.session_key
 
 
-@router.post("/init", response_model=UploadInitResponse)
+@router.post(
+    "/init",
+    response_model=UploadInitResponse,
+    dependencies=[Depends(require_expected_origin)],
+)
 async def initialize_upload(
     body: UploadInitRequest,
     request: Request,
@@ -59,7 +64,11 @@ async def initialize_upload(
     return await uploads.initialize(session_key, body)
 
 
-@router.post("/{document_id}/complete", response_model=DocumentResponse)
+@router.post(
+    "/{document_id}/complete",
+    response_model=DocumentResponse,
+    dependencies=[Depends(require_expected_origin)],
+)
 async def complete_upload(
     document_id: UUID,
     body: UploadCompleteRequest,

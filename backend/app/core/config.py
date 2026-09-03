@@ -4,7 +4,7 @@ import unicodedata
 from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BeforeValidator, Field, field_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -90,6 +90,50 @@ def validate_https_endpoint(value: object) -> str:
     return urlunsplit(("https", netloc, "", "", ""))
 
 
+def validate_origin(value: object, *, allow_http: bool) -> str:
+    """Validate and normalize an exact browser origin."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("frontend origin must be a nonempty string")
+    if any(
+        character == "\\"
+        or character.isspace()
+        or ord(character) < 32
+        or ord(character) == 127
+        or unicodedata.category(character) in {"Cc", "Cf"}
+        for character in value
+    ):
+        raise ValueError("frontend origin contains an unsafe character")
+    allowed_schemes = {"https", "http"} if allow_http else {"https"}
+    try:
+        origin = urlsplit(value)
+        hostname = origin.hostname
+        port = origin.port
+    except ValueError as exc:
+        raise ValueError("frontend origin is malformed") from exc
+    if origin.scheme not in allowed_schemes or not hostname or not origin.netloc:
+        raise ValueError("frontend origin has an invalid scheme or authority")
+    if origin.username is not None or origin.password is not None:
+        raise ValueError("frontend origin must not contain credentials")
+    if origin.netloc.endswith(":"):
+        raise ValueError("frontend origin port is malformed")
+    if port is not None and port < 1:
+        raise ValueError("frontend origin port must be between 1 and 65535")
+    if origin.query or origin.fragment or origin.path not in ("", "/"):
+        raise ValueError("frontend origin must not contain a path, query, or fragment")
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        if re.fullmatch(r"[0-9.]+", hostname):
+            raise ValueError("frontend origin hostname is not a valid IPv4 address")
+        normalized_host = _normalize_dns_hostname(hostname)
+    else:
+        normalized_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+
+    netloc = f"{normalized_host}:{port}" if port is not None else normalized_host
+    return urlunsplit((origin.scheme, netloc, "", "", ""))
+
+
 HttpsEndpoint = Annotated[str, BeforeValidator(validate_https_endpoint)]
 
 
@@ -153,6 +197,12 @@ class Settings(BaseSettings):
     max_questions_per_hour: int = Field(
         default=30, gt=0, le=30, validation_alias="MAX_QUESTIONS_PER_HOUR"
     )
+    max_ingestion_backlog: int = Field(
+        default=100, gt=0, le=10_000, validation_alias="MAX_INGESTION_BACKLOG"
+    )
+    frontend_origin: str = Field(
+        default="http://testserver", validation_alias="FRONTEND_ORIGIN"
+    )
     release_sha: str = Field(default="local", validation_alias="RELEASE_SHA")
     app_mode: Literal["local", "test", "production"] = Field(
         default="local", validation_alias="APP_MODE"
@@ -171,3 +221,12 @@ class Settings(BaseSettings):
         if value != 3072:
             raise ValueError("embedding dimensions must be 3072")
         return value
+
+    @model_validator(mode="after")
+    def validate_frontend_origin(self) -> "Settings":
+        if self.app_mode == "production" and self.frontend_origin == "http://testserver":
+            raise ValueError("production frontend origin must be configured")
+        self.frontend_origin = validate_origin(
+            self.frontend_origin, allow_http=self.app_mode in {"local", "test"}
+        )
+        return self

@@ -82,6 +82,10 @@ class WorkQueue(Protocol):
     async def enqueue_result_cleanup(self, message: ContentResultCleanupMessage) -> None: ...
 
 
+class IngestionBacklog(Protocol):
+    async def get_ingestion_backlog(self) -> int: ...
+
+
 class UploadBlobStore(Protocol):
     async def create_upload(self, blob_name: str, content_type: str) -> BlobUploadGrant: ...
 

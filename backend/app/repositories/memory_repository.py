@@ -243,3 +243,6 @@ class MemoryWorkQueue:
 
     async def enqueue_result_cleanup(self, message: ContentResultCleanupMessage) -> None:
         self.cleanup_messages.append(message)
+
+    async def get_ingestion_backlog(self) -> int:
+        return len(self.ingestion_messages)

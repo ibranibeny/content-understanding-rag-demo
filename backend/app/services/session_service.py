@@ -113,6 +113,15 @@ class SessionService:
 
         return await self._update(session_key, reserve)
 
+    async def require_active(self, session_key: str) -> SessionRecord:
+        stored = await self._repository.get(session_key)
+        if stored is None:
+            raise AppError("session_not_found", 401, "The session was not found.", False)
+        record, _ = stored
+        if record.expires_at <= self._clock.now():
+            raise AppError("session_expired", 401, "The session has expired.", False)
+        return record
+
     async def reserve_and_create(
         self,
         session_key: str,

@@ -70,6 +70,19 @@ class BrokenGrantBlobs(Blobs):
         raise RuntimeError("delegation key unavailable")
 
 
+class Backlog:
+    def __init__(self, count: int = 0, error: Exception | None = None) -> None:
+        self.count = count
+        self.error = error
+        self.calls = 0
+
+    async def get_ingestion_backlog(self) -> int:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.count
+
+
 class Dispatcher:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -126,6 +139,7 @@ async def setup(
     documents: MemoryApplicationRepository | None = None,
     blobs: Blobs | None = None,
     document_repository: MemoryDocumentRepository | None = None,
+    backlog: Backlog | MemoryWorkQueue | None = None,
 ) -> tuple[UploadService, MemoryDocumentRepository, object, Blobs, Dispatcher]:
     repository = documents or MemoryApplicationRepository()
     session_service = SessionService(
@@ -143,6 +157,7 @@ async def setup(
         actual_blobs,
         dispatcher,
         Clock(),
+        backlog or Backlog(),
         document_id_factory=lambda: DOCUMENT_ID,
     )
     return (
@@ -152,6 +167,97 @@ async def setup(
         actual_blobs,
         dispatcher,
     )
+
+
+async def test_init_below_backlog_threshold_proceeds() -> None:
+    backlog = Backlog(99)
+    service, documents, _, blobs, _ = await setup(backlog=backlog)
+
+    response = await service.initialize(
+        SESSION_KEY,
+        UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
+    )
+
+    assert response.document_id == DOCUMENT_ID
+    assert backlog.calls == 1
+    assert len(blobs.created) == 1
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is not None
+
+
+async def test_init_checks_session_existence_before_backlog_or_side_effects() -> None:
+    backlog = Backlog()
+    service, documents, _, blobs, _ = await setup(backlog=backlog)
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            OTHER_KEY,
+            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
+        )
+
+    assert caught.value.code == "session_not_found"
+    assert backlog.calls == 0
+    assert blobs.created == []
+    assert await documents.get(OTHER_KEY, DOCUMENT_ID) is None
+
+
+@pytest.mark.parametrize("count", [100, 101])
+async def test_init_at_or_above_backlog_threshold_has_no_side_effects(count: int) -> None:
+    backlog = Backlog(count)
+    service, documents, sessions, blobs, _ = await setup(backlog=backlog)
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
+        )
+
+    assert caught.value.code == "ingestion_backlog_full"
+    assert caught.value.status_code == 503
+    assert caught.value.retryable is True
+    assert blobs.created == []
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+    session = await sessions.get(SESSION_KEY)
+    assert session is not None
+    assert (session[0].document_count, session[0].total_bytes) == (0, 0)
+
+
+async def test_init_backlog_lookup_failure_is_safe_and_has_no_side_effects() -> None:
+    service, documents, sessions, blobs, _ = await setup(
+        backlog=Backlog(error=RuntimeError("secret adapter detail"))
+    )
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
+        )
+
+    assert caught.value.code == "ingestion_backlog_unavailable"
+    assert caught.value.status_code == 503
+    assert caught.value.retryable is True
+    assert "secret adapter detail" not in caught.value.message
+    assert blobs.created == []
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+    session = await sessions.get(SESSION_KEY)
+    assert session is not None and session[0].document_count == 0
+
+
+async def test_init_negative_backlog_is_internal_dependency_error() -> None:
+    service, documents, sessions, blobs, _ = await setup(backlog=Backlog(-1))
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
+        )
+
+    assert caught.value.code == "ingestion_backlog_unavailable"
+    assert caught.value.status_code == 503
+    assert caught.value.retryable is True
+    assert blobs.created == []
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+    session = await sessions.get(SESSION_KEY)
+    assert session is not None and session[0].document_count == 0
 
 
 async def test_init_reserves_quota_creates_record_and_uses_server_path() -> None:
@@ -361,6 +467,7 @@ async def test_complete_succeeds_and_safely_logs_when_opportunistic_dispatch_fai
         Blobs(),
         BrokenDispatcher(),
         Clock(),
+        Backlog(),
         document_id_factory=lambda: DOCUMENT_ID,
     )
     await service.initialize(
@@ -464,6 +571,7 @@ async def test_complete_never_dispatches_another_documents_pending_outbox() -> N
         Blobs(),
         dispatcher,
         Clock(),
+        queue,
         document_id_factory=lambda: DOCUMENT_ID,
     )
     other_id = UUID("33333333-3333-4333-8333-333333333333")

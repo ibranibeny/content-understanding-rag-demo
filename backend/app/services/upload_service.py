@@ -14,7 +14,7 @@ from app.domain.models import (
     UploadInitRequest,
     UploadInitResponse,
 )
-from app.domain.protocols import Clock, DocumentRepository, UploadBlobStore
+from app.domain.protocols import Clock, DocumentRepository, IngestionBacklog, UploadBlobStore
 from app.services.file_validation import validate_declared_upload, validate_uploaded_file
 from app.services.session_service import SessionService
 
@@ -47,6 +47,7 @@ class UploadService:
         blobs: UploadBlobStore,
         dispatcher: Dispatcher,
         clock: Clock,
+        backlog: IngestionBacklog,
         *,
         document_id_factory: Callable[[], UUID] = uuid4,
     ) -> None:
@@ -55,6 +56,7 @@ class UploadService:
         self._blobs = blobs
         self._dispatcher = dispatcher
         self._clock = clock
+        self._backlog = backlog
         self._document_id_factory = document_id_factory
 
     async def initialize(
@@ -66,6 +68,30 @@ class UploadService:
             request.size_bytes,
             max_file_bytes=self._sessions.settings.max_file_bytes,
         )
+        await self._sessions.require_active(session_key)
+        try:
+            backlog = await self._backlog.get_ingestion_backlog()
+        except Exception as backlog_error:
+            raise AppError(
+                "ingestion_backlog_unavailable",
+                503,
+                "Upload capacity is temporarily unavailable.",
+                True,
+            ) from backlog_error
+        if backlog < 0:
+            raise AppError(
+                "ingestion_backlog_unavailable",
+                503,
+                "Upload capacity is temporarily unavailable.",
+                True,
+            )
+        if backlog >= self._sessions.settings.max_ingestion_backlog:
+            raise AppError(
+                "ingestion_backlog_full",
+                503,
+                "Upload capacity is temporarily full. Try again later.",
+                True,
+            )
         document_id = self._document_id_factory()
         now = self._clock.now()
         blob_name = f"uploads/{session_key}/{document_id}/{declared.file_name}"

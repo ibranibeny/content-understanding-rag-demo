@@ -134,7 +134,9 @@ def test_deployed_cookie_is_secure_with_all_other_flags() -> None:
     async def ready() -> bool:
         return True
 
-    settings = Settings(app_mode="production")
+    settings = Settings(
+        app_mode="production", frontend_origin="https://frontend.example.com"
+    )
     checks = {name: ready for name in ("blob", "queue", "table", "search", "foundry")}
     service = SessionService(
         MemorySessionRepository(),
@@ -160,7 +162,9 @@ def test_production_mode_forces_secure_cookie() -> None:
     async def ready() -> bool:
         return True
 
-    settings = Settings(app_mode="production")
+    settings = Settings(
+        app_mode="production", frontend_origin="https://frontend.example.com"
+    )
     service = SessionService(
         MemorySessionRepository(),
         MutableClock(),

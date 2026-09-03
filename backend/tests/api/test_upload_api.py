@@ -18,6 +18,7 @@ TOKEN = b"x" * 32
 OTHER_TOKEN = b"y" * 32
 SESSION_KEY = sha256(TOKEN).hexdigest()
 DOCUMENT_ID = UUID("11111111-1111-4111-8111-111111111111")
+VALID_ORIGIN = {"Origin": "http://testserver"}
 
 
 class Clock:
@@ -70,6 +71,15 @@ class Dispatcher:
             raise
 
 
+class Backlog:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_ingestion_backlog(self) -> int:
+        self.calls += 1
+        return 0
+
+
 def make_client() -> tuple[TestClient, MemoryDocumentRepository]:
     settings = Settings(app_mode="test")
     repository = MemoryApplicationRepository()
@@ -89,6 +99,7 @@ def make_client() -> tuple[TestClient, MemoryDocumentRepository]:
         Blobs(),
         dispatcher,
         Clock(),
+        Backlog(),
         document_id_factory=lambda: DOCUMENT_ID,
     )
     app = create_app(
@@ -106,6 +117,7 @@ def test_init_rotates_cookie_and_returns_exact_safe_shape() -> None:
 
     response = client.post(
         "/api/uploads/init",
+        headers=VALID_ORIGIN,
         json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
     )
 
@@ -144,6 +156,7 @@ def test_init_rejects_non_basename_with_stable_nonretryable_error(file_name: str
 
     response = client.post(
         "/api/uploads/init",
+        headers=VALID_ORIGIN,
         json={"fileName": file_name, "contentType": "application/pdf", "sizeBytes": 8},
     )
 
@@ -168,6 +181,7 @@ def test_init_rejects_control_characters_with_stable_error_before_side_effects(
 
     response = client.post(
         "/api/uploads/init",
+        headers=VALID_ORIGIN,
         json={
             "fileName": file_name_template.format(control),
             "contentType": "application/pdf",
@@ -185,12 +199,15 @@ def test_complete_accepts_only_etag_and_returns_document_response() -> None:
     client, _ = make_client()
     initialized = client.post(
         "/api/uploads/init",
+        headers=VALID_ORIGIN,
         json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
     )
     assert initialized.status_code == 200
 
     response = client.post(
-        f"/api/uploads/{DOCUMENT_ID}/complete", json={"etag": '"etag"'}
+        f"/api/uploads/{DOCUMENT_ID}/complete",
+        headers=VALID_ORIGIN,
+        json={"etag": '"etag"'},
     )
 
     assert response.status_code == 200
@@ -203,7 +220,9 @@ def test_complete_accepts_only_etag_and_returns_document_response() -> None:
 @pytest.mark.parametrize("etag", ["", "x" * 257, '"bad space"', '"bad\nline"'])
 def test_complete_rejects_invalid_etag(etag: str) -> None:
     client, _ = make_client()
-    response = client.post(f"/api/uploads/{DOCUMENT_ID}/complete", json={"etag": etag})
+    response = client.post(
+        f"/api/uploads/{DOCUMENT_ID}/complete", headers=VALID_ORIGIN, json={"etag": etag}
+    )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_request"
 
@@ -212,6 +231,7 @@ def test_init_rejects_client_blob_path_and_unknown_fields() -> None:
     client, _ = make_client()
     response = client.post(
         "/api/uploads/init",
+        headers=VALID_ORIGIN,
         json={
             "fileName": "a.pdf",
             "contentType": "application/pdf",
@@ -232,13 +252,16 @@ def test_cross_session_complete_returns_404() -> None:
     owner, _ = make_client()
     initialized = owner.post(
         "/api/uploads/init",
+        headers=VALID_ORIGIN,
         json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
     )
     assert initialized.status_code == 200
     owner.cookies.set("cu_session", "eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXk")
 
     response = owner.post(
-        f"/api/uploads/{DOCUMENT_ID}/complete", json={"etag": '"etag"'}
+        f"/api/uploads/{DOCUMENT_ID}/complete",
+        headers=VALID_ORIGIN,
+        json={"etag": '"etag"'},
     )
     assert response.status_code == 404
     assert response.headers["cache-control"] == "no-store"
@@ -250,7 +273,9 @@ async def _ready() -> bool:
 
 
 def test_production_upload_cookie_has_all_security_attributes() -> None:
-    settings = Settings(app_mode="production")
+    settings = Settings(
+        app_mode="production", frontend_origin="https://frontend.example.com"
+    )
     repository = MemoryApplicationRepository()
     sessions = repository.sessions
     session_service = SessionService(
@@ -268,6 +293,7 @@ def test_production_upload_cookie_has_all_security_attributes() -> None:
         Blobs(),
         dispatcher,
         Clock(),
+        Backlog(),
         document_id_factory=lambda: DOCUMENT_ID,
     )
     app = create_app(
@@ -282,6 +308,7 @@ def test_production_upload_cookie_has_all_security_attributes() -> None:
     )
     response = TestClient(app).post(
         "/api/uploads/init",
+        headers={"Origin": "https://frontend.example.com"},
         json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
     )
     cookie = response.headers["set-cookie"].lower()
@@ -306,7 +333,7 @@ def test_lifespan_starts_and_cleanly_cancels_injected_dispatcher() -> None:
     documents = repository.documents
     dispatcher = Dispatcher()
     blobs = Blobs()
-    uploads = UploadService(session_service, documents, blobs, dispatcher, Clock())
+    uploads = UploadService(session_service, documents, blobs, dispatcher, Clock(), Backlog())
     app = create_app(
         settings=settings,
         session_service=session_service,
@@ -335,7 +362,9 @@ def test_factory_rejects_incoherent_partial_upload_dependency_injection(injected
     )
     documents = repository.documents
     dispatcher = Dispatcher()
-    uploads = UploadService(session_service, documents, Blobs(), dispatcher, Clock())
+    uploads = UploadService(
+        session_service, documents, Blobs(), dispatcher, Clock(), Backlog()
+    )
     kwargs = {injected: uploads if injected == "upload_service" else dispatcher}
     with pytest.raises(ValueError, match="upload_service and outbox_dispatcher"):
         create_app(settings=settings, session_service=session_service, **kwargs)  # type: ignore[arg-type]
@@ -348,3 +377,86 @@ def test_factory_shares_injected_memory_session_state_with_default_upload_graph(
 
     app = create_app(settings=settings, session_service=session_service)
     assert app.state.session_service is session_service
+
+
+def test_factory_shares_one_memory_queue_for_backlog_and_outbox_dispatch() -> None:
+    app = create_app(settings=Settings(app_mode="test"))
+
+    assert app.state.upload_service._backlog is app.state.work_queue
+    assert app.state.outbox_dispatcher._queue is app.state.work_queue
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        None,
+        "null",
+        "not-an-origin",
+        "http://testserver, https://evil.example",
+        "https://testserver",
+        "http://testserver.evil.example",
+        "http://user@testserver",
+        "http://testserver/path",
+        "http://testserver:80",
+        "http://testserver\x7f",
+    ],
+)
+def test_init_rejects_invalid_origin_before_all_side_effects(origin: str | None) -> None:
+    client, documents = make_client()
+    headers = {} if origin is None else {"Origin": origin}
+    service = client.app.state.upload_service
+
+    response = client.post(
+        "/api/uploads/init",
+        headers=headers,
+        json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
+    )
+
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["error"] == {
+        "code": "invalid_origin",
+        "message": "The request origin is not allowed.",
+        "retryable": False,
+        "correlationId": response.headers["x-correlation-id"],
+    }
+    assert "set-cookie" not in response.headers
+    assert documents.persisted_text_for_test() == ""
+    assert service._blobs.created == []
+    assert service._backlog.calls == 0
+
+
+def test_init_rejects_multiple_origin_headers_before_side_effects() -> None:
+    client, documents = make_client()
+    service = client.app.state.upload_service
+
+    response = client.post(
+        "/api/uploads/init",
+        headers=[("Origin", "http://testserver"), ("Origin", "http://testserver")],
+        json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "invalid_origin"
+    assert "set-cookie" not in response.headers
+    assert documents.persisted_text_for_test() == ""
+    assert service._blobs.created == []
+    assert service._backlog.calls == 0
+
+
+def test_complete_rejects_invalid_origin_before_session_or_document_lookup() -> None:
+    client, documents = make_client()
+    service = client.app.state.upload_service
+
+    response = client.post(
+        f"/api/uploads/{DOCUMENT_ID}/complete",
+        headers={"Origin": "https://testserver"},
+        json={"etag": '"etag"'},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "invalid_origin"
+    assert "set-cookie" not in response.headers
+    assert documents.persisted_text_for_test() == ""
+    assert service._blobs.created == []
+    assert service._backlog.calls == 0

@@ -92,6 +92,7 @@ def create_app(
         ),
         actual_dispatcher,
         clock,
+        queue,
     )
     dispatcher_enabled = (
         actual_settings.app_mode == "production"
@@ -120,6 +121,7 @@ def create_app(
     app.state.session_service = actual_session_service
     app.state.upload_service = actual_upload_service
     app.state.outbox_dispatcher = actual_dispatcher
+    app.state.work_queue = queue
 
     if readiness_checks is None:
         if app.state.settings.app_mode == "production":

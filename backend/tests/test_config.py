@@ -16,6 +16,8 @@ def test_settings_defaults_lock_required_models_and_limits() -> None:
     assert settings.max_documents == 5
     assert settings.max_session_bytes == 500 * 1024 * 1024
     assert settings.max_questions_per_hour == 30
+    assert settings.max_ingestion_backlog == 100
+    assert settings.frontend_origin == "http://testserver"
 
 
 @pytest.mark.parametrize(
@@ -63,6 +65,7 @@ def test_settings_accept_environment_aliases(monkeypatch: pytest.MonkeyPatch) ->
         "max_documents",
         "max_session_bytes",
         "max_questions_per_hour",
+        "max_ingestion_backlog",
         "embedding_dimensions",
     ],
 )
@@ -79,6 +82,7 @@ def test_settings_reject_nonpositive_counts_and_durations(field: str, value: int
         ("max_documents", 6),
         ("max_session_bytes", 500 * 1024 * 1024 + 1),
         ("max_questions_per_hour", 31),
+        ("max_ingestion_backlog", 10_001),
     ],
 )
 def test_settings_reject_values_above_workshop_contract_maxima(field: str, value: int) -> None:
@@ -179,3 +183,43 @@ def test_settings_accept_valid_dns_and_ip_endpoint_authorities(
     settings = Settings.model_validate({"search_endpoint": value})
 
     assert settings.search_endpoint == normalized
+
+
+@pytest.mark.parametrize(
+    ("value", "normalized"),
+    [
+        ("http://testserver/", "http://testserver"),
+        ("https://EXAMPLE.com:8443/", "https://example.com:8443"),
+    ],
+)
+@pytest.mark.parametrize("app_mode", ["local", "test"])
+def test_local_and_test_frontend_origin_is_strictly_normalized(
+    app_mode: str, value: str, normalized: str
+) -> None:
+    settings = Settings.model_validate({"app_mode": app_mode, "frontend_origin": value})
+
+    assert settings.frontend_origin == normalized
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://frontend.example.com",
+        "https://user:password@frontend.example.com",
+        "https://frontend.example.com/path",
+        "https://frontend.example.com?query=1",
+        "https://frontend.example.com#fragment",
+        "https://frontend.example.com:0",
+        "https://frontend.example.com:65536",
+        "https://frontend.example.com\u200b",
+        "https://frontend.example.com\n",
+    ],
+)
+def test_production_rejects_unsafe_or_non_https_frontend_origins(value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"app_mode": "production", "frontend_origin": value})
+
+
+def test_production_requires_frontend_origin_override() -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"app_mode": "production"})
