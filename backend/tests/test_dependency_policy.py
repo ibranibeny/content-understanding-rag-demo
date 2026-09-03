@@ -10,8 +10,18 @@ import pytest
 APPROVED_INDEX = "https://packagefeedproxy.microsoft.io/pypi/simple/"
 APPROVED_INDEX_NAME = "microsoft-enterprise"
 APPROVED_PROXY_HOST = "packagefeedproxy.microsoft.io"
-AZURE_ARTIFACTS_HOST_SUFFIX = ".pkgs.visualstudio.com"
+APPROVED_DEPENDENCY_HOSTS = frozenset(
+    {
+        APPROVED_PROXY_HOST,
+        "ms-feed-2.pkgs.visualstudio.com",
+        "ms-feed-12.pkgs.visualstudio.com",
+        "ms-feed-17.pkgs.visualstudio.com",
+        "ms-feed-25.pkgs.visualstudio.com",
+    }
+)
 UNKNOWN_PUBLIC_MIRROR = "https://mirror.example.org/simple"
+EXTERNAL_FILE_URL = "file://external-host/package.whl"
+UNRELATED_AZURE_ARTIFACTS_URL = "https://unrelated.pkgs.visualstudio.com/feed/package.whl"
 ADDITIONAL_INDEX_KEYS = ("index-url", "extra-index-url", "find-links")
 
 
@@ -53,13 +63,16 @@ def assert_enterprise_feed_only(
         for value in _iter_strings(document):
             parsed = urlsplit(value)
             if parsed.scheme.lower() == "file":
+                assert parsed.hostname in (None, ""), (
+                    f"file dependency URL must not include a host: {parsed.hostname}"
+                )
                 continue
             if parsed.scheme.lower() not in {"http", "https"} and parsed.hostname is None:
                 continue
 
             host = parsed.hostname.lower() if parsed.hostname else None
             assert host is not None, "network dependency URL must include a host"
-            assert host == APPROVED_PROXY_HOST or host.endswith(AZURE_ARTIFACTS_HOST_SUFFIX), (
+            assert host in APPROVED_DEPENDENCY_HOSTS, (
                 f"network dependency host is not approved: {host}"
             )
 
@@ -88,6 +101,24 @@ def test_dependency_policy_rejects_an_unknown_public_mirror() -> None:
         assert_enterprise_feed_only(pyproject, mutated_lockfile)
 
 
+def test_dependency_policy_rejects_file_urls_with_an_external_host() -> None:
+    pyproject, lockfile = _load_dependency_documents()
+    mutated_lockfile = copy.deepcopy(lockfile)
+    mutated_lockfile["unexpected-source"] = EXTERNAL_FILE_URL
+
+    with pytest.raises(AssertionError, match="external-host"):
+        assert_enterprise_feed_only(pyproject, mutated_lockfile)
+
+
+def test_dependency_policy_rejects_unrelated_azure_artifacts_hosts() -> None:
+    pyproject, lockfile = _load_dependency_documents()
+    mutated_lockfile = copy.deepcopy(lockfile)
+    mutated_lockfile["unexpected-source"] = UNRELATED_AZURE_ARTIFACTS_URL
+
+    with pytest.raises(AssertionError, match="unrelated.pkgs.visualstudio.com"):
+        assert_enterprise_feed_only(pyproject, mutated_lockfile)
+
+
 def test_dependency_policy_rejects_default_false() -> None:
     pyproject, lockfile = _load_dependency_documents()
     mutated_pyproject = copy.deepcopy(pyproject)
@@ -111,9 +142,10 @@ def test_dependency_policy_rejects_additional_index_configuration() -> None:
         assert_enterprise_feed_only(mutated_pyproject, lockfile)
 
 
-def test_dependency_policy_allows_local_file_urls() -> None:
+@pytest.mark.parametrize("local_url", ["file:///tmp/package.whl", "file:///C:/package.whl"])
+def test_dependency_policy_allows_local_file_urls(local_url: str) -> None:
     pyproject, lockfile = _load_dependency_documents()
     mutated_lockfile = copy.deepcopy(lockfile)
-    mutated_lockfile["local-source"] = "file:///tmp/package.whl"
+    mutated_lockfile["local-source"] = local_url
 
     assert_enterprise_feed_only(pyproject, mutated_lockfile)
