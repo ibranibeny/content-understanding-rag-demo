@@ -1,8 +1,9 @@
+from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.domain.models import (
     ChatRequest,
@@ -25,6 +26,7 @@ from app.domain.models import (
 )
 
 NOW = datetime(2026, 9, 3, 10, 0, tzinfo=UTC)
+NAIVE_NOW = datetime.fromisoformat("2026-09-03T10:00:00")
 DOCUMENT_ID = UUID("9f4b8484-9f6b-44f2-b4d4-e5e7687c80df")
 CORRELATION_ID = UUID("868fba2c-1695-42d4-af7f-79069e434b34")
 
@@ -40,6 +42,148 @@ def ingestion_message(**overrides: object) -> dict[str, object]:
     }
     values.update(overrides)
     return values
+
+
+def session_record(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "sessionKey": "a" * 64,
+        "createdAt": NOW,
+        "expiresAt": NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+def document_record(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "sessionKey": "a" * 64,
+        "documentId": str(DOCUMENT_ID),
+        "fileName": "file.pdf",
+        "contentType": "application/pdf",
+        "sizeBytes": 100,
+        "blobName": "uploads/a/file.pdf",
+        "state": "ready",
+        "createdAt": NOW,
+        "updatedAt": NOW,
+        "expiresAt": NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+def cleanup_message(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "version": 1,
+        "sessionKey": "a" * 64,
+        "documentId": str(DOCUMENT_ID),
+        "resultId": "result-1",
+        "correlationId": str(CORRELATION_ID),
+        "enqueuedAt": NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+def outbox_record(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "outboxId": "ingest:document:1",
+        "sessionKey": "a" * 64,
+        "kind": "ingestion",
+        "payload": ingestion_message(),
+        "createdAt": NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+def document_chunk(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "chunkId": "chunk-1",
+        "sessionKey": "a" * 64,
+        "documentId": str(DOCUMENT_ID),
+        "ordinal": 0,
+        "fileName": "file.pdf",
+        "sourceLocator": "page 1",
+        "content": "Evidence",
+        "contentVector": [0.1, 0.2],
+        "expiresAt": NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+def retrieved_evidence(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "citationId": "citation-1",
+        "documentId": str(DOCUMENT_ID),
+        "chunkId": "chunk-1",
+        "fileName": "file.pdf",
+        "sourceLocator": "page 1",
+        "content": "Evidence",
+    }
+    values.update(overrides)
+    return values
+
+
+def citation(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "citationId": "citation-1",
+        "documentId": str(DOCUMENT_ID),
+        "fileName": "file.pdf",
+        "sourceLocator": "page 1",
+    }
+    values.update(overrides)
+    return values
+
+
+def session_response(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "expiresAt": NOW,
+        "documentsUsed": 1,
+        "documentLimit": 5,
+        "bytesUsed": 100,
+        "byteLimit": 500,
+        "questionsUsed": 2,
+        "questionLimit": 30,
+    }
+    values.update(overrides)
+    return values
+
+
+def upload_init_response(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "uploadUrl": "https://example.test/upload",
+        "documentId": str(DOCUMENT_ID),
+        "expiresAt": NOW,
+        "requiredHeaders": {"x-ms-blob-type": "BlockBlob"},
+    }
+    values.update(overrides)
+    return values
+
+
+def document_response(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "documentId": str(DOCUMENT_ID),
+        "fileName": "file.pdf",
+        "state": "ready",
+        "createdAt": NOW,
+        "updatedAt": NOW,
+        "expiresAt": NOW,
+    }
+    values.update(overrides)
+    return values
+
+
+def chat_request(**overrides: object) -> dict[str, object]:
+    values: dict[str, object] = {
+        "question": "What is this?",
+        "documentIds": [str(DOCUMENT_ID)],
+    }
+    values.update(overrides)
+    return values
+
+
+ModelFactory = Callable[..., dict[str, object]]
 
 
 def test_queue_message_rejects_unknown_versions() -> None:
@@ -328,3 +472,109 @@ def test_all_api_dtos_validate_aliases_and_serialize_camel_case_by_default() -> 
         }
     )
     assert parsed.document_ids == (DOCUMENT_ID,)
+
+
+@pytest.mark.parametrize(
+    ("model_type", "factory"),
+    [
+        (SessionRecord, session_record),
+        (DocumentRecord, document_record),
+        (IngestionMessage, ingestion_message),
+        (ContentResultCleanupMessage, cleanup_message),
+        (OutboxRecord, outbox_record),
+        (DocumentChunk, document_chunk),
+    ],
+)
+@pytest.mark.parametrize("invalid_key", ["not-hex", "A" * 64, "a" * 63])
+def test_every_session_key_boundary_rejects_invalid_values(
+    model_type: type[BaseModel], factory: ModelFactory, invalid_key: str
+) -> None:
+    with pytest.raises(ValidationError):
+        model_type.model_validate(factory(sessionKey=invalid_key))
+
+
+@pytest.mark.parametrize(
+    ("model_type", "factory", "field"),
+    [
+        (DocumentRecord, document_record, "documentId"),
+        (IngestionMessage, ingestion_message, "documentId"),
+        (IngestionMessage, ingestion_message, "correlationId"),
+        (ContentResultCleanupMessage, cleanup_message, "documentId"),
+        (ContentResultCleanupMessage, cleanup_message, "correlationId"),
+        (DocumentChunk, document_chunk, "documentId"),
+        (RetrievedEvidence, retrieved_evidence, "documentId"),
+        (Citation, citation, "documentId"),
+        (UploadInitResponse, upload_init_response, "documentId"),
+        (DocumentResponse, document_response, "documentId"),
+        (ChatRequest, chat_request, "documentIds"),
+    ],
+)
+def test_every_uuid_boundary_rejects_malformed_ids(
+    model_type: type[BaseModel], factory: ModelFactory, field: str
+) -> None:
+    invalid_value: object = ["not-a-uuid"] if field == "documentIds" else "not-a-uuid"
+
+    with pytest.raises(ValidationError):
+        model_type.model_validate(factory(**{field: invalid_value}))
+
+
+@pytest.mark.parametrize(
+    ("model_type", "factory", "field", "invalid_value"),
+    [
+        (SessionRecord, session_record, "createdAt", NAIVE_NOW),
+        (SessionRecord, session_record, "expiresAt", NAIVE_NOW),
+        (
+            SessionRecord,
+            session_record,
+            "questionTimestamps",
+            [NAIVE_NOW],
+        ),
+        (DocumentRecord, document_record, "createdAt", NAIVE_NOW),
+        (DocumentRecord, document_record, "updatedAt", NAIVE_NOW),
+        (DocumentRecord, document_record, "expiresAt", NAIVE_NOW),
+        (DocumentRecord, document_record, "deletedAt", NAIVE_NOW),
+        (IngestionMessage, ingestion_message, "enqueuedAt", NAIVE_NOW),
+        (
+            ContentResultCleanupMessage,
+            cleanup_message,
+            "enqueuedAt",
+            NAIVE_NOW,
+        ),
+        (OutboxRecord, outbox_record, "createdAt", NAIVE_NOW),
+        (OutboxRecord, outbox_record, "sentAt", NAIVE_NOW),
+        (DocumentChunk, document_chunk, "expiresAt", NAIVE_NOW),
+        (SessionResponse, session_response, "expiresAt", NAIVE_NOW),
+        (UploadInitResponse, upload_init_response, "expiresAt", NAIVE_NOW),
+        (DocumentResponse, document_response, "createdAt", NAIVE_NOW),
+        (DocumentResponse, document_response, "updatedAt", NAIVE_NOW),
+        (DocumentResponse, document_response, "expiresAt", NAIVE_NOW),
+    ],
+)
+def test_every_datetime_boundary_rejects_naive_values(
+    model_type: type[BaseModel],
+    factory: ModelFactory,
+    field: str,
+    invalid_value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        model_type.model_validate(factory(**{field: invalid_value}))
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("session_key", "not-hex"),
+        ("session_key", "A" * 64),
+        ("session_key", "a" * 63),
+        ("document_id", "not-a-uuid"),
+        ("created_at", NAIVE_NOW),
+    ],
+)
+def test_versioned_document_revalidates_nested_document_instances(
+    field: str, invalid_value: object
+) -> None:
+    valid_document = DocumentRecord.model_validate(document_record())
+    unvalidated_document = valid_document.model_copy(update={field: invalid_value})
+
+    with pytest.raises(ValidationError):
+        VersionedDocument(value=unvalidated_document, etag='W/"1"')

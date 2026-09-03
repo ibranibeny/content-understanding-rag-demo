@@ -37,6 +37,7 @@ class ContractModel(BaseModel):
         extra="forbid",
         frozen=True,
         populate_by_name=True,
+        revalidate_instances="always",
         serialize_by_alias=True,
     )
 

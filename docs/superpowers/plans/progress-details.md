@@ -8,3 +8,18 @@
 - Implementation: host-bearing and HTTP(S)-shaped dependency URLs now require the exact `https` scheme before the existing exact hostname allowlist is applied; hostless local file URLs remain allowed and hosted file URLs remain rejected.
 - TDD green and final verification: focused policy tests `11 passed`; Ruff passed; mypy reported no issues in 4 source files; full backend tests `12 passed`; `git diff --check` passed.
 - Decomposition: atomic. No scenario skill root, Execution stage, or Breakdown Hints files were supplied.
+
+## 2026-09-03 — Task 2 model-validation guard remediation
+
+- Scope: completed negative validation coverage for every applicable persistence, queue,
+	evidence, nested document, and API DTO boundary in `backend/tests/test_models.py`.
+- TDD red: the focused model suite reported `3 failed, 70 passed`; all failures showed that
+	`VersionedDocument` accepted unvalidated `DocumentRecord` instances with invalid session keys,
+	UUIDs, or naive timestamps.
+- Implementation: enabled shared Pydantic nested-instance revalidation on `ContractModel`,
+	preserving frozen models, camel-case serialization, and the existing annotated validators.
+- TDD green and final verification: focused model tests passed; Ruff passed; mypy reported no
+	issues in 11 source files; the full backend suite passed with 105 tests; `git diff --check`
+	passed; editor diagnostics reported no errors in the modified Python files.
+- Decomposition: atomic. The change is one shared contract rule plus parameterized boundary
+	coverage. No scenario skill root, Execution stage, or Breakdown Hints files were supplied.
