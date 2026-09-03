@@ -1,9 +1,11 @@
 import asyncio
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.core.config import Settings
+from app.core.telemetry import configure_telemetry
 from app.main import ApplicationDependencies, ProductionDependencies, create_production_dependencies
 from app.services.deletion_service import DeletionService
 
@@ -81,6 +83,9 @@ async def async_main(
 
 
 def run() -> None:
+    configure_telemetry(
+        "cleanup", os.getenv("RELEASE_SHA", "local"), os.getenv("APP_MODE", "local")
+    )
     raise SystemExit(asyncio.run(async_main()))
 
 

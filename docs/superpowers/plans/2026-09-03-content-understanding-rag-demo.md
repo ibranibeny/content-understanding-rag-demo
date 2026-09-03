@@ -267,6 +267,20 @@ Breakdown Hints files were supplied.
 - Create: `backend/tests/test_models.py`
 - Modify: `backend/app/main.py`
 
+**Minimal MVP execution progress (2026-09-03):** Added a lazy production-only Azure Monitor
+configuration module and initialized it at the API, worker, and cleanup process entry points. The
+distro supplies FastAPI, Azure SDK, and supported HTTP instrumentation; no alert framework, custom
+exporter, or cleanup changes were introduced. Resource attributes contain only the stable process
+service name and validated release SHA. The reusable sanitizer removes cookie/auth/session, SAS/token,
+document/content/extraction, prompt/question/message/body attributes and strips URL queries/fragments.
+Tests were authored first and observed failing because the telemetry module did not exist. Fresh
+verification then passed 26 affected tests, Ruff with no findings, strict mypy across 38 application
+modules, and the complete backend suite with 664 tests. Editor diagnostics report no errors in changed
+Python files. A clean temporary install exported from the locked runtime dependencies also imported
+`configure_azure_monitor` successfully; the existing worktree virtual environment has a Windows file
+lock on one exporter metadata directory, but this does not affect a clean deployment install. This
+plan section is the required task/progress record because no standalone task files were supplied.
+
 - [x] **Step 1: Write failing model/config tests**
 
 ```python
@@ -1067,6 +1081,23 @@ git commit -m "feat: stream grounded GPT-5 answers"
 
 ### Task 10: Implement expiry cleanup and privacy-safe telemetry
 
+**Minimal MVP execution research (2026-09-03):** Cleanup is already implemented in
+`backend/app/cleanup.py` and covered by lifecycle tests, so this task is limited to telemetry and
+must not add alerting, custom export, or cleanup complexity. The backend already depends on
+`azure-monitor-opentelemetry`; the supported distro entry point is `configure_azure_monitor`, which
+automatically enables FastAPI, Azure SDK, and supported outbound HTTP instrumentation. Configuration
+will remain lazy so local/test processes never import or initialize the exporter. Telemetry is enabled
+only when `APP_MODE=production` and `APPLICATIONINSIGHTS_CONNECTION_STRING` is nonempty, with a
+service-specific `service.name` and the safe `RELEASE_SHA` as `service.version`. API, worker, and
+cleanup entry points will use distinct stable service names. The redaction boundary will drop values
+for cookie/auth/session, document/content/extraction, prompt/question/message/body, and SAS/token keys;
+URL-like attributes retain only scheme/authority/path and lose query/fragment data. Tests will inject
+the Azure Monitor configurator, proving disabled local/unset behavior and exact safe resource
+attributes without exporting telemetry. This is one bounded configuration/helper change, and the
+user explicitly directed no decomposition. No modernization scenario skill root, Execution-stage
+file, Breakdown Hints, standalone `task.md`, or `progress-details.md` was forwarded; this plan section
+is therefore the execution and append-only progress artifact.
+
 **Files:**
 - Create: `backend/app/cleanup.py`
 - Create: `backend/app/core/telemetry.py`
@@ -1082,7 +1113,7 @@ Test that expired documents are tombstoned, fenced, and removed; user-created `d
 
 Scan expiry partitions/pages without loading the whole table. Reuse `DeletionService`, cap concurrency, return a nonzero process exit only for systemic failures, and emit counts for deleted, pending, skipped, and failed records.
 
-- [ ] **Step 3: Add telemetry redaction tests**
+- [x] **Step 3: Add telemetry redaction tests**
 
 ```python
 @pytest.mark.parametrize("secret", ["sig=abc", "cu_session=raw", "SAS_TOKEN", "full document text"])
@@ -1090,11 +1121,11 @@ def test_sensitive_values_are_redacted(secret: str) -> None:
     assert secret not in sanitize_attributes({"url": f"https://blob/?{secret}", "cookie": secret, "content": secret}).values()
 ```
 
-- [ ] **Step 4: Configure OpenTelemetry**
+- [x] **Step 4: Configure OpenTelemetry**
 
 Instrument FastAPI, HTTPX, Azure SDK dependencies, queue processing, and custom spans. Record IDs, states, counts, durations, status codes, model deployment, and release SHA. Never record cookies, SAS query strings, document content, extraction JSON, full questions, or prompts.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cd backend && uv run pytest tests/test_cleanup.py tests/test_telemetry.py -q`
 

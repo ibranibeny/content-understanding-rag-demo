@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from app.core.config import Settings
 from app.core.errors import ConcurrencyConflict, TransientArtifactError
+from app.core.telemetry import configure_telemetry
 from app.domain.models import (
     ContentResultCleanupMessage,
     DocumentState,
@@ -315,5 +317,8 @@ async def _main(stop: asyncio.Event | None = None) -> None:
 
 
 def run() -> None:
+    configure_telemetry(
+        "worker", os.getenv("RELEASE_SHA", "local"), os.getenv("APP_MODE", "local")
+    )
     logging.basicConfig(level=logging.INFO)
     asyncio.run(_main())

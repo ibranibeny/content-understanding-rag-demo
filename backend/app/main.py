@@ -27,6 +27,7 @@ from app.core.errors import (
     request_validation_error_handler,
 )
 from app.core.readiness import ReadinessRegistry
+from app.core.telemetry import configure_telemetry
 from app.domain.protocols import (
     BlobStore,
     ChatModel,
@@ -580,6 +581,7 @@ def run() -> None:
     import uvicorn
 
     mode = os.getenv("APP_MODE", "local")
+    configure_telemetry("api", os.getenv("RELEASE_SHA", "local"), mode)
     if mode == "production":
         factory = "app.main:create_production_app"
     elif os.getenv("AZURITE_TABLE_CONNECTION_STRING"):
