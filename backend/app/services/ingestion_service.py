@@ -143,20 +143,37 @@ class IngestionService:
         result_id = current.value.content_result_id
         assert operation_url is not None and result_id is not None
         normalized = await self._poll(operation_url, lease)
-        current = await self._transition(current, DocumentState.CLASSIFIED,
-                                         document_type=str(normalized["category"]))
+        current = await self._transition(current, DocumentState.CLASSIFIED)
         fields = cast(Mapping[str, JsonValue], normalized["fields"])
         title = fields.get("title")
+        await self._blobs.write_derived(
+            normalized_path,
+            self._encode_normalized(normalized),
+            "application/json",
+        )
+        markdown_path = self._markdown_path(current.value)
+        await self._blobs.write_derived(
+            markdown_path,
+            str(normalized["markdown"]).encode(),
+            "text/markdown; charset=utf-8",
+        )
+        lease.ensure_valid()
+        token_counts = normalized.get("tokenCounts")
+        processing_metadata = dict(current.value.processing_metadata)
+        if isinstance(token_counts, Mapping):
+            processing_metadata["contentUnderstandingTokenCounts"] = cast(
+                JsonValue,
+                dict(token_counts),
+            )
         current = await self._transition(
             current, DocumentState.EXTRACTED,
+            document_type=str(normalized["category"]),
             extraction=cast(JsonValue, dict(fields)),
             title=title if isinstance(title, str) else current.value.title,
             page_count=int(normalized.get("pageCount", 0)),
             markdown_blob_name=normalized_path,
+            processing_metadata=processing_metadata,
         )
-        await self._blobs.write_derived(normalized_path, self._encode_normalized(normalized), "application/json")
-        markdown_path = self._markdown_path(current.value)
-        await self._blobs.write_derived(markdown_path, str(normalized["markdown"]).encode(), "text/markdown; charset=utf-8")
         return await self._delete_result_or_defer(current, message, lease, normalized)
 
     async def _delete_result_or_defer(

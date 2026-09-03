@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import pytest
+
 from app.domain.models import DocumentRecord, DocumentState, IngestionMessage
 from app.repositories.memory_repository import MemoryDocumentRepository, MemoryWorkQueue
 from app.services.content_understanding import ContentUnderstandingError
@@ -30,11 +32,13 @@ class Lease:
 
 
 class Blobs:
-    def __init__(self, *, on_enter=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, *, on_enter=None, crash_after_write: str | None = None) -> None:  # type: ignore[no-untyped-def]
         self.values: dict[str, bytes] = {}
         self.lease = Lease()
         self.on_enter = on_enter
+        self.crash_after_write = crash_after_write
         self.read_urls: list[str] = []
+        self.writes: list[str] = []
 
     @asynccontextmanager
     async def acquire_document_lease(self, session_key: str, document_id: UUID):  # type: ignore[no-untyped-def]
@@ -49,6 +53,9 @@ class Blobs:
     async def write_derived(self, blob_name: str, data: bytes, content_type: str) -> None:
         del content_type
         self.values[blob_name] = data
+        self.writes.append(blob_name)
+        if self.crash_after_write == blob_name:
+            raise RuntimeError("simulated crash after blob write")
 
     async def read_derived(self, blob_name: str) -> bytes:
         return self.values[blob_name]
@@ -197,6 +204,78 @@ async def test_redelivery_after_remote_delete_retries_delete_without_polling() -
     stored = await repo.get(SESSION, DOCUMENT)
     assert stored is not None and stored.value.state is DocumentState.READY
     assert stored.value.content_result_id is None
+
+
+@pytest.mark.parametrize("crash_blob", ["normalized.json", "content.md"])
+async def test_crash_after_derived_write_before_metadata_repolls_and_rewrites(
+    crash_blob: str,
+) -> None:
+    normalized_path = f"derived/{SESSION}/{DOCUMENT}/normalized.json"
+    markdown_path = f"derived/{SESSION}/{DOCUMENT}/content.md"
+    crash_path = normalized_path if crash_blob == "normalized.json" else markdown_path
+    blobs = Blobs(crash_after_write=crash_path)
+    service, repo, _, cu, _ = await harness(blobs=blobs)
+
+    with pytest.raises(RuntimeError, match="simulated crash after blob write"):
+        await service.process(message())
+
+    crashed = await repo.get(SESSION, DOCUMENT)
+    assert crashed is not None
+    assert crashed.value.content_result_id == "result-1"
+    assert crashed.value.markdown_blob_name is None
+    assert crashed.value.document_type is None
+    assert crashed.value.extraction is None
+    assert crashed.value.page_count is None
+    assert "contentUnderstandingTokenCounts" not in crashed.value.processing_metadata
+    assert cu.deleted_result_ids == []
+
+    blobs.crash_after_write = None
+    calls_before_redelivery = cu.get_calls
+    await service.process(message())
+
+    assert cu.get_calls > calls_before_redelivery
+    assert blobs.writes.count(normalized_path) == 2
+    assert blobs.writes.count(markdown_path) == (1 if crash_blob == "normalized.json" else 2)
+    recovered = await repo.get(SESSION, DOCUMENT)
+    assert recovered is not None and recovered.value.state is DocumentState.READY
+    assert recovered.value.document_type == "invoice"
+    assert recovered.value.extraction == {"title": "Invoice 7", "total": 42}
+    assert recovered.value.page_count == 1
+    assert recovered.value.processing_metadata["contentUnderstandingTokenCounts"] == {
+        "tokens.gpt-5.input": 8,
+        "tokens.gpt-5.output": 2,
+    }
+
+
+async def test_crash_after_metadata_before_remote_delete_resumes_from_blob() -> None:
+    service, repo, blobs, cu, _ = await harness()
+    original_delete = cu.delete_result
+    crashed_once = False
+
+    async def crash_before_delete(result_id: str) -> None:
+        nonlocal crashed_once
+        if not crashed_once:
+            crashed_once = True
+            raise RuntimeError("simulated crash before remote delete")
+        await original_delete(result_id)
+
+    cu.delete_result = crash_before_delete  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="simulated crash before remote delete"):
+        await service.process(message())
+
+    crashed = await repo.get(SESSION, DOCUMENT)
+    assert crashed is not None
+    assert crashed.value.state is DocumentState.EXTRACTED
+    assert crashed.value.markdown_blob_name is not None
+    assert crashed.value.markdown_blob_name in blobs.values
+    calls_before_redelivery = cu.get_calls
+
+    await service.process(message())
+
+    assert cu.get_calls == calls_before_redelivery
+    assert cu.deleted_result_ids == ["result-1"]
+    recovered = await repo.get(SESSION, DOCUMENT)
+    assert recovered is not None and recovered.value.state is DocumentState.READY
 
 
 async def test_transient_delete_persists_cleanup_outbox_and_stops_before_chunking() -> None:
