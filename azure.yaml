@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: content-understanding-rag-demo
+metadata:
+  template: content-understanding-rag-demo@0.1.0
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+# The frontend and API are azd services (matched to their Container Apps by the azd-service-name tag).
+# The worker and cleanup job share the backend image and are updated by the deployment scripts (see Task 16).
+services:
+  frontend:
+    project: ./frontend
+    language: js
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .
+  api:
+    project: ./backend
+    language: py
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .

@@ -1396,6 +1396,8 @@ git commit -m "build: containerize workshop MVP"
 
 **Executor constraint:** Dispatch this task with model **Claude Opus 4.8** and require it to read current Bicep best practices. Use AVM where available; do not replace Bicep with Terraform, ARM JSON, Pulumi, or generated CLI provisioning.
 
+> **MVP note (2026-09-03):** Implemented as a simplified, functional MVP per operator direction — details in `.azure/deployment-plan.md`. Intentional deviations from the step text below: one shared application user-assigned identity (not separate API/worker/cleanup identities); a public API Container App with CORS restricted to the frontend origin (not internal ingress); AVM modules used where straightforward with raw resources for Storage, Foundry + model deployments, Container Apps/Job, and role assignments; and Azure Monitor alerts deferred. `az bicep format`/`build` are clean (zero diagnostics) and 27 policy assertions pass; no live Azure deployment yet.
+
 **Files:**
 - Create: `azure.yaml`
 - Create: `infra/main.bicep`
@@ -1409,7 +1411,7 @@ git commit -m "build: containerize workshop MVP"
 - Create: `infra/modules/alerts.bicep`
 - Create: `infra/tests/main.test.bicepparam`
 
-- [ ] **Step 1: Pin discovered AVM modules**
+- [x] **Step 1: Pin discovered AVM modules**
 
 Use these module references discovered on 2026-09-03:
 
@@ -1429,11 +1431,11 @@ br/public:avm/res/authorization/role-assignment/rg-scope:0.1.1
 
 `Microsoft.CognitiveServices/accounts/deployments` has no standalone AVM; configure both deployments through the cognitive-services account AVM child-resource input or a schema-verified child resource. Do not invent a module.
 
-- [ ] **Step 2: Write failing IaC policy tests**
+- [x] **Step 2: Write failing IaC policy tests**
 
 Create a PowerShell/Python test that compiles Bicep and inspects template JSON. Assert resource-group target scope; Southeast Asia app/data resources; East US 2 Foundry; no secrets, listKeys, Shared Key, Search keys, Foundry keys, or ACR admin; exactly two application image parameters; the one backend image parameter is applied identically to API, worker, and cleanup; two worker queue rules; managed identities; Basic Search/ACR; 24-hour blob lifecycle; multiple revision mode; seven alert categories; bootstrap image only as a first-run default; and every API, worker, cleanup, ACR-pull, Foundry-system, local-bootstrap, and GitHub-deployment role/scope from the specification's runtime RBAC matrix.
 
-- [ ] **Step 3: Implement naming, identities, data, and monitoring**
+- [x] **Step 3: Implement naming, identities, data, and monitoring**
 
 Use deterministic `uniqueString(subscription().id, resourceGroup().id, environmentName)`. Create separate API, worker, cleanup, and ACR-pull identities. Accept a required `deploymentPrincipalId` for the local bootstrap principal. When nonempty `githubOwner` and `githubRepository` parameters are supplied, also create the GitHub deployment UAMI and a federated credential with subject `repo:{owner}/{repository}:environment:production`, audience `api://AzureADTokenExchange`, and issuer `https://token.actions.githubusercontent.com`.
 
@@ -1441,15 +1443,15 @@ Assign both bootstrap principals the data-plane roles required by `bootstrap-dat
 
 Create Azure Monitor alerts for ingestion poison depth, Content Understanding cleanup backlog, oldest queue-message age, ingestion failures, API 5xx rate, end-to-end latency, and model `429` throttling. Route them to a parameterized action group email only when a nonempty operations email is supplied; alerts still deploy without an action group for workshop inspection.
 
-- [ ] **Step 4: Implement Foundry in East US 2**
+- [x] **Step 4: Implement Foundry in East US 2**
 
 Deploy one `AIServices` account with system identity, custom subdomain, key access disabled, `gpt-5` Global Standard, and `text-embedding-3-large` Standard with 3,072 dimensions. Use parameters for capacity but not model ID substitution. Assign explicit account-scoped roles from the design.
 
-- [ ] **Step 5: Implement Container Apps**
+- [x] **Step 5: Implement Container Apps**
 
 Create environment, frontend/API multiple-revision apps, worker no-ingress app with two managed-identity Azure Queue rules, and hourly cleanup job. Configure ACR pull by UAMI, probes, nonroot containers, resource limits, all endpoint/account/deployment environment variables, Application Insights connection string, and `RELEASE_SHA`. API ingress is internal. Initial image parameters default to Microsoft hello-world bootstrap images; repeated provisioning receives active immutable digests.
 
-- [ ] **Step 6: Compile and validate locally**
+- [x] **Step 6: Compile and validate locally**
 
 Run: `az bicep format --file infra/main.bicep`
 
@@ -1459,7 +1461,7 @@ Run: `uv --project backend run pytest infra/tests -q`
 
 Expected: zero Bicep errors or unknown-property/type warnings, and every compiled-template policy assertion passes. Live `az deployment group validate` is deferred to Task 19 after the user selects a subscription and the bootstrap resource group exists.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add azure.yaml infra
