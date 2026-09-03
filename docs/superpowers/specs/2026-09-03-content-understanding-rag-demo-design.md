@@ -18,7 +18,7 @@ The user experience is an English-language **Technical Console**. It exposes upl
 
 The application and persistent data plane run in **Southeast Asia**. Microsoft Foundry, Content Understanding, `gpt-5`, and `text-embedding-3-large` run from a Foundry resource in **East US 2**. Runtime Azure access uses managed identities and Microsoft Entra ID. The browser receives only short-lived, blob-scoped user-delegation SAS tokens for direct uploads; no account keys or AI API keys are used by the application.
 
-`gpt-5` is the application runtime model. The request to use **Claude Opus 5** applies only to the coding agent used to author and review deployment/IaC work when that model is available in the development environment; it is not deployed as an application dependency.
+`gpt-5` is the application runtime model. The request to use **Claude Opus 4.8** applies only to the coding agent used to author and review container, deployment, workflow, and IaC work when that model is available in the development environment; it is not deployed as an application dependency.
 
 This is a workshop demo for up to 20 users, not a production multitenant service. Anonymous sessions isolate retrieval and expire after 24 hours.
 
@@ -65,7 +65,7 @@ This is a workshop demo for up to 20 users, not a production multitenant service
 | App/data region | Southeast Asia |
 | Foundry/model region | East US 2 |
 | Infrastructure | `azd` and Bicep, preferring Azure Verified Modules |
-| Deployment/IaC authoring agent | Claude Opus 5 when available; no runtime dependency |
+| Container/deployment/IaC authoring agent | Claude Opus 4.8 when available; no runtime dependency |
 | Repository | Public GitHub repository |
 | CI/CD | PR validation and review; deployment after merge to `main` |
 

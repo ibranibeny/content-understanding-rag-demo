@@ -10,7 +10,7 @@
 
 **Source of truth:** `docs/superpowers/specs/2026-09-03-content-understanding-rag-demo-design.md`
 
-**Model constraint:** `gpt-5` is the application runtime model. Tasks 14–17 that author or review container, deployment, workflow, or Bicep code MUST be dispatched with **Claude Opus 5** when that model is available. If it is unavailable, stop and report the blocker instead of silently substituting a model.
+**Model constraint:** `gpt-5` is the application runtime model. Tasks 14–17 that author or review container, deployment, workflow, or Bicep code MUST be dispatched with **Claude Opus 4.8**. If it is unavailable, stop and report the blocker instead of silently substituting a model.
 
 ---
 
@@ -917,7 +917,7 @@ git commit -m "feat: add grounded chat diagnostics"
 
 ### Task 14: Containerize and run the complete local stack
 
-**Executor constraint:** Dispatch this task with model **Claude Opus 5** because Docker and NGINX are deployment artifacts.
+**Executor constraint:** Dispatch this task with model **Claude Opus 4.8** because Docker and NGINX are deployment artifacts.
 
 **Files:**
 - Create: `backend/Dockerfile`
@@ -962,7 +962,7 @@ git commit -m "build: containerize the workshop application"
 
 ### Task 15: Author Bicep infrastructure with Azure Verified Modules
 
-**Executor constraint:** Dispatch this task with model **Claude Opus 5** and require it to read current Bicep best practices. Use AVM where available; do not replace Bicep with Terraform, ARM JSON, Pulumi, or generated CLI provisioning.
+**Executor constraint:** Dispatch this task with model **Claude Opus 4.8** and require it to read current Bicep best practices. Use AVM where available; do not replace Bicep with Terraform, ARM JSON, Pulumi, or generated CLI provisioning.
 
 **Files:**
 - Create: `azure.yaml`
@@ -1036,7 +1036,7 @@ git commit -m "feat: provision workshop infrastructure with Bicep"
 
 ### Task 16: Implement data-plane bootstrap and candidate deployment
 
-**Executor constraint:** Dispatch this task with model **Claude Opus 5**. All resource creation remains in Bicep; scripts may only perform documented data-plane and revision operations.
+**Executor constraint:** Dispatch this task with model **Claude Opus 4.8**. All resource creation remains in Bicep; scripts may only perform documented data-plane and revision operations.
 
 **Files:**
 - Create: `scripts/bootstrap-data-plane.py`
@@ -1096,7 +1096,7 @@ git commit -m "feat: add safe Bicep deployment automation"
 
 ### Task 17: Add GitHub CI, CodeQL, Copilot review setup, and deployment
 
-**Executor constraint:** Dispatch deployment workflow and OIDC/Bicep integration review with model **Claude Opus 5**.
+**Executor constraint:** Dispatch deployment workflow and OIDC/Bicep integration review with model **Claude Opus 4.8**.
 
 **Files:**
 - Create: `.github/workflows/ci.yml`
@@ -1168,7 +1168,7 @@ Run backend lint, mypy, unit/integration coverage, frontend lint/type/unit/E2E/b
 
 - [ ] **Step 3: Write workshop and operations documentation**
 
-Document prerequisites, architecture, 90-minute agenda, deploy/remove commands, GitHub flow, safe sample data, cross-region disclosure, cost controls, quota troubleshooting, Content Understanding failure recovery, candidate rollback, and cleanup verification. State clearly that runtime is `gpt-5`; Claude Opus 5 is only the implementation-agent preference.
+Document prerequisites, architecture, 90-minute agenda, deploy/remove commands, GitHub flow, safe sample data, cross-region disclosure, cost controls, quota troubleshooting, Content Understanding failure recovery, candidate rollback, and cleanup verification. State clearly that runtime is `gpt-5`; Claude Opus 4.8 is only the implementation-agent preference.
 
 - [ ] **Step 4: Verify docs and links**
 
@@ -1252,7 +1252,7 @@ git push
 | Hybrid RAG with citations/diagnostics | service tests, UI tests, deployed smoke |
 | Frontend/backend Container Apps | Bicep outputs and live revisions |
 | Bicep IaC | no alternate IaC files; Bicep compile/validate |
-| Claude Opus 5 for container/deployment/IaC authoring | implementation dispatch record for Tasks 14–17 |
+| Claude Opus 4.8 for container/deployment/IaC authoring | implementation dispatch record for Tasks 14–17 |
 | GitHub CodeQL and Copilot review | PR evidence and ruleset query |
 | Build → ACR → candidate deploy | main workflow run and immutable digests |
 | Rollback safety | deployment state-machine tests and injected failure test |
