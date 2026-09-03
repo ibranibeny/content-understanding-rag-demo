@@ -8,6 +8,14 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
+from app.core.config import (
+    SESSION_COOKIE_HTTP_ONLY,
+    SESSION_COOKIE_MAX_AGE_SECONDS,
+    SESSION_COOKIE_NAME,
+    SESSION_COOKIE_PATH,
+    SESSION_COOKIE_SAME_SITE,
+)
+
 CORRELATION_HEADER = "X-Correlation-ID"
 
 
@@ -63,11 +71,23 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
             "correlationId": correlation_id,
         }
     }
-    return JSONResponse(
+    response = JSONResponse(
         status_code=exc.status_code,
         content=envelope,
         headers={"Cache-Control": "no-store"},
     )
+    rotated_token = getattr(request.state, "rotated_session_token", None)
+    if isinstance(rotated_token, str):
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=rotated_token,
+            max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+            secure=request.app.state.settings.app_mode == "production",
+            httponly=SESSION_COOKIE_HTTP_ONLY,
+            samesite=SESSION_COOKIE_SAME_SITE,
+            path=SESSION_COOKIE_PATH,
+        )
+    return response
 
 
 async def request_validation_error_handler(

@@ -652,6 +652,38 @@ passed with 507 tests. `git diff --check` passed, and the reviewed diff remains 
 5B service, domain/protocol, repository, test, safe error type, and execution-record scope. No HTTP
 document route, queue/worker, Search Azure adapter, ephemeral task, or dependency/feed change was added.
 
+**Task 5C controller-decomposition research (2026-09-03):** This explicitly bounded unit is only
+the document lifecycle HTTP API and cohesive application wiring; scheduled cleanup, worker processing,
+and RAG remain outside scope. Task 5A/B already provide shared memory/Table document repositories,
+same-partition ETag/outbox transactions, targeted outbox dispatch, and logical deletion through
+`DeletionService.request_delete`. The document model needs a persisted retry counter so initial upload
+attempt 1 and later deterministic retry outbox IDs cannot collide. A focused `DocumentService` will own
+list/get/retry/delete policy over one injected repository, deletion service, dispatcher, and clock;
+routes will reuse the existing cookie resolver and exact-Origin dependency. Lists and reads hide both
+`deleting` and `deleted` immediately, sort newest first with UUID tie-breaking, expose extraction only
+through the owner-scoped detail DTO, and never serialize session keys, blob names, SAS values, or remote
+operation URLs. Retry will permit only unexpired retryable failures, atomically clear failure fields,
+increment the counter, and create `ingest:{documentId}:{nextAttempt}` with conflict convergence and a
+targeted dispatch. The app factory will construct all local services from one shared memory repository,
+accept cohesive document/deletion injection for Table-backed production composition, and close only
+dependencies it constructs. This unit is atomic by explicit controller decomposition and because all
+changes implement one route/service boundary with one focused verification gate. No modernization
+scenario skill root, Execution stage, Breakdown Hints, standalone `task.md`, or `progress-details.md`
+was forwarded; this plan section is the required execution/progress artifact.
+
+**Task 5C execution and verification (2026-09-03):** Strict TDD began with the focused document API
+suite failing during collection because `DocumentService` did not exist. The implementation adds
+owner-scoped summary/detail DTOs, immediate deleting/deleted visibility fencing, stable newest-first
+ordering, persisted retry attempts, atomic deterministic retry outboxes with conflict convergence and
+targeted best-effort dispatch, exact-Origin guarded mutations, typed `202` deletion, shared cookie
+resolution including rotation on handled errors, and cohesive local/injected dependency graphs. Injected
+upload/blob resources are not closed by the factory; only factory-owned Blob resources are closed after
+dispatcher cancellation. Locked offline sync succeeded, Ruff reported no findings, strict mypy reported
+no issues across 26 application modules, 76 focused session/upload/document API tests passed, and the
+full backend suite passed with 528 tests. Docker is unavailable on `PATH`, so `docker compose config`
+could not run; no Compose file was changed. `git diff --check` passed before this execution record was
+appended, and the reviewed diff is confined to Task 5C API/service/DTO/wiring/tests and this plan.
+
 **Files:**
 - Create: `backend/app/repositories/table_repository.py`
 - Create: `backend/app/services/deletion_service.py`

@@ -319,7 +319,7 @@ def test_production_upload_cookie_has_all_security_attributes() -> None:
     assert "max-age=86400" in cookie
 
 
-def test_lifespan_starts_and_cleanly_cancels_injected_dispatcher() -> None:
+def test_lifespan_cancels_injected_dispatcher_without_closing_injected_uploads() -> None:
     settings = Settings(app_mode="test")
     repository = MemoryApplicationRepository()
     sessions = repository.sessions
@@ -345,7 +345,7 @@ def test_lifespan_starts_and_cleanly_cancels_injected_dispatcher() -> None:
         assert dispatcher.started.is_set()
         assert dispatcher.cancelled is False
     assert dispatcher.cancelled is True
-    assert blobs.closed == 1
+    assert blobs.closed == 0
 
 
 @pytest.mark.parametrize("injected", ["upload_service", "outbox_dispatcher"])

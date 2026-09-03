@@ -59,6 +59,14 @@ class UploadService:
         self._backlog = backlog
         self._document_id_factory = document_id_factory
 
+    @property
+    def documents(self) -> DocumentRepository:
+        return self._documents
+
+    @property
+    def blobs(self) -> UploadBlobStore:
+        return self._blobs
+
     async def initialize(
         self, session_key: str, request: UploadInitRequest
     ) -> UploadInitResponse:
@@ -176,7 +184,9 @@ class UploadService:
             declared, verified.header, verified.package, verified.office_summary
         )
         now = self._clock.now()
-        queued = document.model_copy(update={"state": DocumentState.QUEUED, "updated_at": now})
+        queued = document.model_copy(
+            update={"state": DocumentState.QUEUED, "updated_at": now, "retry_count": 1}
+        )
         message = IngestionMessage(
             version=1,
             session_key=session_key,
@@ -243,6 +253,7 @@ class UploadService:
             extraction=document.extraction,
             failure_code=document.failure_code,
             failure_retryable=document.failure_retryable,
+            retry_count=document.retry_count,
             created_at=document.created_at,
             updated_at=document.updated_at,
             expires_at=document.expires_at,

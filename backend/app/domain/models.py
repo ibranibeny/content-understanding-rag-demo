@@ -104,6 +104,7 @@ class DocumentRecord(ContractModel):
     token_count: int | None = Field(default=None, ge=0)
     failure_code: str | None = None
     failure_retryable: bool = False
+    retry_count: int = Field(default=0, ge=0)
     tombstoned_at: UtcDateTime | None = None
     deletion_requested_at: UtcDateTime | None = None
     deleted_at: UtcDateTime | None = None
@@ -227,9 +228,33 @@ class DocumentResponse(ContractModel):
     extraction: JsonValue | None = None
     failure_code: str | None = None
     failure_retryable: bool = False
+    retry_count: int = Field(default=0, ge=0)
     created_at: UtcDateTime
     updated_at: UtcDateTime
     expires_at: UtcDateTime
+
+
+class DocumentSummaryResponse(ContractModel):
+    document_id: UUID
+    file_name: str
+    state: DocumentState
+    document_type: str | None = None
+    title: str | None = None
+    page_count: int | None = None
+    chunk_count: int | None = None
+    token_count: int | None = None
+    failure_code: str | None = None
+    failure_retryable: bool = False
+    retry_count: int = Field(default=0, ge=0)
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
+    expires_at: UtcDateTime
+
+
+class DocumentDeleteResponse(ContractModel):
+    document_id: UUID
+    state: Literal[DocumentState.DELETING, DocumentState.DELETED]
+    updated_at: UtcDateTime
 
 
 class ChatTurn(ContractModel):
