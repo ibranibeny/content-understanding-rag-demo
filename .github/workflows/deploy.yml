@@ -1,0 +1,56 @@
+name: Deploy
+
+# Production deployment. Authenticates to Azure with OIDC (federated credential) using the
+# non-secret client/tenant/subscription IDs stored as production environment variables, then
+# delegates the full rollout to the existing scripts/deploy.ps1 (azd provision, ACR build,
+# immutable-digest rollout, data-plane bootstrap, smoke test). No secrets are used.
+#
+# The federated identity referenced by AZURE_CLIENT_ID must already hold the data-plane roles
+# granted by the Bicep deployment; deploy.ps1 resolves the acting principal at run time.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skipLiveModel:
+        description: Skip live model calls during the smoke test
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login (OIDC, no secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Install azd
+        uses: Azure/setup-azd@v2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Deploy with existing deploy.ps1
+        shell: pwsh
+        run: |
+          $deployArgs = @('-ReleaseSha', '${{ github.sha }}')
+          if ('${{ vars.AZURE_ENV_NAME }}')        { $deployArgs += @('-EnvironmentName', '${{ vars.AZURE_ENV_NAME }}') }
+          if ('${{ vars.AZURE_LOCATION }}')        { $deployArgs += @('-Location', '${{ vars.AZURE_LOCATION }}') }
+          if ('${{ vars.AZURE_FOUNDRY_LOCATION }}') { $deployArgs += @('-FoundryLocation', '${{ vars.AZURE_FOUNDRY_LOCATION }}') }
+          if ('${{ inputs.skipLiveModel }}' -eq 'true') { $deployArgs += '-SkipLiveModel' }
+          ./scripts/deploy.ps1 @deployArgs
