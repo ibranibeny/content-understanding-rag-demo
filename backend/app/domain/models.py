@@ -274,6 +274,6 @@ class ChatTurn(ContractModel):
 
 
 class ChatRequest(ContractModel):
-    question: str
+    question: str = Field(min_length=1, max_length=4000)
     document_ids: tuple[UUID, ...] = ()
     history: tuple[ChatTurn, ...] = ()

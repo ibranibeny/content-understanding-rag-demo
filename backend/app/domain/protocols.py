@@ -178,9 +178,7 @@ class ChunkSearch(Protocol):
 
 
 class ChatModel(Protocol):
-    def stream(
-        self, question: str, evidence: Sequence[RetrievedEvidence]
-    ) -> AsyncIterator[str]: ...
+    def stream(self, instructions: str, input_text: str) -> AsyncIterator[str]: ...
 
 
 class ReadinessCheck(Protocol):

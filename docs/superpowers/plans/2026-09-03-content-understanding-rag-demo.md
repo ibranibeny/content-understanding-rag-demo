@@ -984,6 +984,25 @@ git commit -m "feat: add durable document ingestion worker"
 
 ### Task 9: Implement lifecycle-filtered GPT-5 RAG streaming
 
+**Execution research (2026-09-03):** Tasks 3, 5, and 7 already provide rolling question quota
+reservation, owner-partitioned document repositories, strict lifecycle states, a fixed 3,072-dimension
+embedding client, and Azure AI Search hybrid retrieval that builds the mandatory `sessionKey` filter,
+uses semantic reranking with vector `k=50`, and returns at most eight results. The current Microsoft
+Learn Responses API guidance uses the Azure v1 endpoint (`/openai/v1/responses`), Microsoft Entra scope
+`https://ai.azure.com/.default`, `stream=true`, `store=false`, `reasoning={"effort":"medium"}`, and
+`response.output_text.delta` events; `gpt-5` version 2025-08-07 remains supported. This task will add
+one injected GPT-5 streaming adapter using explicit bearer-token HTTP authentication, one orchestration
+service, one SSE route, and focused blocker tests. Retrieved document IDs will be loaded as one
+repository batch, then evidence will be retained only for owner-matching, `ready`, nonexpired records
+before IDs are reassigned consecutively as `S1`–`S8`. Evidence text stays exclusively inside visibly
+delimited untrusted user input; instructions require evidence-only answers and the exact insufficient-
+evidence behavior. The route reuses the existing exact-Origin and session-cookie boundaries, reserves
+quota before streaming, emits safe JSON SSE only, and closes the upstream stream on disconnect. The
+scope is one coherent RAG request boundary and is atomic. No modernization scenario skill root,
+Execution-stage file, standalone task/progress files, or Breakdown Hints were forwarded; this plan
+section is the execution/progress artifact. Only the Microsoft enterprise package feed and locked
+offline environment will be used.
+
 **Files:**
 - Create: `backend/app/services/rag_service.py`
 - Create: `backend/app/api/chat.py`
@@ -991,6 +1010,19 @@ git commit -m "feat: add durable document ingestion worker"
 - Create: `backend/tests/api/test_chat_api.py`
 - Create: `backend/tests/fixtures/prompt_injection.md`
 - Modify: `backend/app/main.py`
+
+**Task 9 execution and verification (2026-09-03):** Focused tests were written first and observed
+failing during collection because the RAG module did not exist. The implementation adds the exact
+`POST /api/chat/stream` origin/session/quota boundary, 4,000-character validation, owner-selected
+document narrowing, existing 3,072-dimension embedding and hybrid Search usage, lifecycle post-filtering,
+server-owned `S1`–`S8` evidence delimiters, evidence-only/insufficient instructions, and validated safe
+metadata. The production/local dependency graphs now construct the Entra-authenticated Azure v1
+Responses streaming client for deployment exactly `gpt-5`, `store=false`, medium reasoning, and bounded
+output; no API-key header or package/feed change was added. SSE emits retrieval, token, validated
+citation, done, or safe error events with no-store/no-buffer headers and closes the upstream generator
+on disconnect. Locked offline sync succeeded; 11 focused tests passed; Ruff reported no findings;
+strict mypy reported no issues across 37 application modules; and the full backend suite passed with
+652 tests. Decomposition remained atomic as assessed above; no separate task/progress artifacts exist.
 
 - [ ] **Step 1: Write failing retrieval and citation tests**
 

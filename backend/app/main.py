@@ -14,6 +14,7 @@ from azure.storage.queue.aio import QueueClient
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from app.api.chat import router as chat_router
 from app.api.documents import router as documents_router
 from app.api.health import router as health_router
 from app.api.session import router as session_router
@@ -28,8 +29,10 @@ from app.core.errors import (
 from app.core.readiness import ReadinessRegistry
 from app.domain.protocols import (
     BlobStore,
+    ChatModel,
     ChunkSearch,
     DocumentRepository,
+    EmbeddingClient,
     IngestionBacklog,
     ReadinessCheck,
     SessionDocumentRepository,
@@ -47,8 +50,10 @@ from app.repositories.table_repository import TableApplicationRepository, TableC
 from app.services.blob_service import AzureBlobStore, BlobServiceClientLike, LocalBlobSasSigner
 from app.services.deletion_service import DeletionService
 from app.services.document_service import DocumentService
+from app.services.embeddings import FoundryEmbeddingClient
 from app.services.outbox_service import OutboxDispatcher
 from app.services.queue_service import AzureWorkQueue, QueueClientLike
+from app.services.rag_service import FoundryGPT5Client, RagService
 from app.services.search_service import AzureSearchService
 from app.services.session_service import SessionService, SystemClock
 from app.services.upload_service import UploadService
@@ -108,12 +113,14 @@ class ApplicationDependencies:
     readiness_checks: Mapping[str, ReadinessCheck]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ProductionDependencies(ApplicationDependencies):
     application_repository: CloseableApplicationRepository
     work_queue: CloseableApplicationWorkQueue
     chunk_search: CloseableChunkSearch
     credential: AsyncTokenCredential
+    embedding_client: EmbeddingClient
+    chat_model: ChatModel
 
     async def aclose(self) -> None:
         results = await asyncio.gather(
@@ -121,6 +128,16 @@ class ProductionDependencies(ApplicationDependencies):
             self.work_queue.aclose(),
             self.blob_store.aclose(),
             self.chunk_search.aclose(),
+            *(
+                (cast(FoundryEmbeddingClient, self.embedding_client).aclose(),)
+                if self.embedding_client is not None
+                else ()
+            ),
+            *(
+                (cast(FoundryGPT5Client, self.chat_model).aclose(),)
+                if self.chat_model is not None
+                else ()
+            ),
             self.credential.close(),
             return_exceptions=True,
         )
@@ -129,7 +146,7 @@ class ProductionDependencies(ApplicationDependencies):
                 raise result
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class LocalDependencies(ApplicationDependencies):
     application_repository: CloseableApplicationRepository
     work_queue: CloseableApplicationWorkQueue
@@ -137,6 +154,8 @@ class LocalDependencies(ApplicationDependencies):
     blob_service_client: BlobServiceClientLike
     queue_clients: tuple[QueueClientLike, ...]
     local_container_names: tuple[str, ...]
+    embedding_client: EmbeddingClient
+    chat_model: ChatModel
 
     async def ensure_local_data_plane(self) -> None:
         async def create(operation: Callable[[], object]) -> None:
@@ -180,6 +199,8 @@ def create_production_dependencies(
     search_factory: Callable[
         [Settings, AsyncTokenCredential], CloseableChunkSearch
     ] | None = None,
+    embedding_factory: Callable[[Settings, AsyncTokenCredential], EmbeddingClient] | None = None,
+    chat_factory: Callable[[Settings, AsyncTokenCredential], ChatModel] | None = None,
 ) -> ApplicationDependencies:
     if settings.app_mode != "production":
         raise ValueError("production dependencies require production settings")
@@ -222,6 +243,25 @@ def create_production_dependencies(
             credential=actual_credential,
         )
     )
+    embeddings = (
+        embedding_factory(settings, actual_credential)
+        if embedding_factory is not None
+        else FoundryEmbeddingClient(
+            settings.foundry_endpoint,
+            deployment=settings.embedding_deployment,
+            credential=actual_credential,
+            release_sha=settings.release_sha,
+        )
+    )
+    chat = (
+        chat_factory(settings, actual_credential)
+        if chat_factory is not None
+        else FoundryGPT5Client(
+            settings.foundry_endpoint,
+            deployment=settings.chat_deployment,
+            credential=actual_credential,
+        )
+    )
     actual_readiness = dict(readiness_checks) if readiness_checks is not None else {
         name: _not_ready for name in PRODUCTION_READINESS_CHECKS
     }
@@ -232,6 +272,8 @@ def create_production_dependencies(
         work_queue=queue,
         blob_store=blobs,
         chunk_search=search,
+        embedding_client=embeddings,
+        chat_model=chat,
         readiness_checks=actual_readiness,
         credential=actual_credential,
     )
@@ -241,6 +283,8 @@ def create_local_dependencies(
     settings: Settings,
     *,
     chunk_search: ChunkSearch | None = None,
+    embedding_client: EmbeddingClient | None = None,
+    chat_model: ChatModel | None = None,
 ) -> LocalDependencies:
     connection_string = settings.azurite_table_connection_string
     if settings.app_mode == "production":
@@ -301,6 +345,12 @@ def create_local_dependencies(
         work_queue=queue,
         blob_store=blobs,
         chunk_search=chunk_search or MemoryChunkSearch(),
+        embedding_client=embedding_client or FoundryEmbeddingClient(
+            settings.foundry_endpoint, deployment=settings.embedding_deployment
+        ),
+        chat_model=chat_model or FoundryGPT5Client(
+            settings.foundry_endpoint, deployment=settings.chat_deployment
+        ),
         readiness_checks={"configuration": _ready},
         table_client=cast(TableClientLike, table_client),
         blob_service_client=cast(BlobServiceClientLike, blob_client),
@@ -321,6 +371,7 @@ def create_app(
     outbox_dispatcher: ApplicationDispatcher | None = None,
     document_service: DocumentService | None = None,
     deletion_service: DeletionService | None = None,
+    rag_service: RagService | None = None,
     *,
     dependencies: ApplicationDependencies | None = None,
     enable_outbox_dispatcher: bool | None = None,
@@ -335,6 +386,7 @@ def create_app(
             outbox_dispatcher,
             document_service,
             deletion_service,
+            rag_service,
         )
     ):
         raise ValueError("dependencies cannot be combined with individual service injection")
@@ -459,6 +511,23 @@ def create_app(
     app.state.document_repository = documents
     app.state.deletion_service = actual_deletion_service
     app.state.document_service = actual_document_service
+    if rag_service is not None:
+        actual_rag_service = rag_service
+    elif (
+        dependencies is not None
+        and getattr(dependencies, "embedding_client", None) is not None
+        and getattr(dependencies, "chat_model", None) is not None
+    ):
+        actual_rag_service = RagService(
+            documents,
+            cast(EmbeddingClient, dependencies.embedding_client),  # type: ignore[attr-defined]
+            dependencies.chunk_search,
+            cast(ChatModel, dependencies.chat_model),  # type: ignore[attr-defined]
+            clock,
+        )
+    else:
+        actual_rag_service = None
+    app.state.rag_service = actual_rag_service
 
     if dependencies is not None:
         readiness_checks = dependencies.readiness_checks
@@ -485,6 +554,7 @@ def create_app(
     app.include_router(session_router)
     app.include_router(uploads_router)
     app.include_router(documents_router)
+    app.include_router(chat_router)
     return app
 
 
