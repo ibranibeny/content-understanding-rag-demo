@@ -3,6 +3,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
@@ -34,6 +35,8 @@ async def correlation_middleware(
     request.state.correlation_id = correlation_id
     response = await call_next(request)
     response.headers[CORRELATION_HEADER] = correlation_id
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -50,3 +53,22 @@ async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
         }
     }
     return JSONResponse(status_code=exc.status_code, content=envelope)
+
+
+async def request_validation_error_handler(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    if not isinstance(exc, RequestValidationError):
+        raise exc
+    correlation_id = getattr(request.state, "correlation_id", str(uuid4()))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "invalid_request",
+                "message": "The request is invalid.",
+                "retryable": False,
+                "correlationId": correlation_id,
+            }
+        },
+    )

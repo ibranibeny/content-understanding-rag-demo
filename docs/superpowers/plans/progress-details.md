@@ -132,3 +132,40 @@
 	editor diagnostics reported no errors in all six modified Python files.
 - Decision: no user decision is required; security invariants are intentionally absent from
 	`Settings`, and obsolete overrides are ignored by the existing extra-field policy.
+
+## 2026-09-03 — Task 4 secure direct upload and transactional outbox
+
+- Initial partial state: preserved five modified tracked implementation files and ten untracked
+	Task 4 implementation/test files from the failed conversation-layer invocation. The plan already
+	contained execution research, but this progress log contained no Task 4 red/green evidence.
+- Resume assessment: the partial implementation supplied strict file declarations/signatures,
+	bounded Office ZIP reads, one-blob user-delegation SAS, blob property verification, quota-backed
+	initialization, a same-lock document/outbox transaction, opportunistic/background dispatch, and
+	the two upload routes. Its initial focused suite passed `63 tests` after
+	`uv sync --locked --offline` resolved 89 and checked 88 cached packages.
+- Decomposition: atomic. The task remains one upload security boundary and deterministic state
+	transition. No modernization scenario skill root, Execution stage, or Breakdown Hints files were
+	supplied; the Task 4 execution research in the plan was revalidated before source edits.
+- TDD recovery: retained the existing production code as explicitly required. Existing behavior
+	tests and the plan's recorded Step 1 expected-red contract establish prior red intent; missing
+	behavior received fresh tests. The red run produced `11 failed, 62 passed`: unsafe/duplicate ZIP
+	entry acceptance, unstable create rollback, inconsistent SAS compensation, unsafe concurrent
+	state success, and FastAPI's default validation body. One SAS permission assertion was corrected
+	because the installed SDK represents unsupported permissions by omission and exact `str() == cw`.
+- Implementation/remediation: rejects absolute drive, control-bearing, empty, traversal, and
+	duplicate normalized ZIP entries; keeps quota reserved if failed document deletion leaves the
+	document durable; preserves stable create failure when rollback also fails; accepts a concurrent
+	completion only when the durable document is already queued; and maps request validation to the
+	stable correlation-aware error envelope. Added blob SDK failure/conditional short-read tests,
+	production cookie-attribute coverage, and lifespan startup/cancellation coverage.
+- Review: an independent read-only review was performed before final verification. All findings in
+	Task 4 scope were either remediated or covered. Durable Azure Table/Queue production repository
+	wiring is intentionally deferred to Task 5; Task 4 provides the required injectable Azure Blob
+	adapter and deterministic local/test implementations.
+- Final verification: focused Task 4 suite `78 passed`; Ruff `All checks passed`; strict mypy
+	`Success: no issues found in 21 source files`; full backend pytest `335 passed`; editor diagnostics
+	reported no errors. The required offline sync succeeded without network package operations.
+- Final-review remediation: review identified incoherent partial application-factory injection as
+	a retry-loss risk because an injected upload service could persist into a repository different
+	from the lifespan dispatcher's repository. The regression produced the expected `2 failed,
+	6 passed`; the factory now requires upload service and dispatcher injection as one pair.

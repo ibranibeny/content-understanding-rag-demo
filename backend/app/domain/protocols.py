@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
@@ -24,6 +25,8 @@ class DocumentRepository(Protocol):
 
     async def replace(self, document: DocumentRecord, etag: str) -> VersionedDocument: ...
 
+    async def delete(self, session_key: str, document_id: UUID, etag: str) -> None: ...
+
     async def list_for_session(self, session_key: str) -> list[VersionedDocument]: ...
 
     async def commit_queued_with_outbox(
@@ -32,7 +35,7 @@ class DocumentRepository(Protocol):
 
     async def list_pending_outbox(self, limit: int) -> list[tuple[OutboxRecord, str]]: ...
 
-    async def mark_outbox_sent(self, outbox_id: str, etag: str) -> None: ...
+    async def mark_outbox_sent(self, outbox_id: str, etag: str, sent_at: datetime) -> None: ...
 
 
 class SessionRepository(Protocol):
@@ -43,16 +46,40 @@ class SessionRepository(Protocol):
     async def replace(self, session: SessionRecord, etag: str) -> tuple[SessionRecord, str]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class BlobUploadGrant:
+    upload_url: str
+    expires_at: datetime
+    required_headers: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedBlobUpload:
+    header: bytes
+    package: bytes | None
+
+
 class WorkQueue(Protocol):
     async def enqueue_ingestion(self, message: IngestionMessage) -> None: ...
 
     async def enqueue_result_cleanup(self, message: ContentResultCleanupMessage) -> None: ...
 
 
-class BlobStore(Protocol):
-    async def create_upload_url(
-        self, blob_name: str, content_type: str, expires_at: datetime
-    ) -> str: ...
+class UploadBlobStore(Protocol):
+    async def create_upload(self, blob_name: str, content_type: str) -> BlobUploadGrant: ...
+
+    async def verify_upload(
+        self,
+        blob_name: str,
+        expected_etag: str,
+        expected_size: int,
+        expected_content_type: str,
+        *,
+        office: bool,
+    ) -> VerifiedBlobUpload: ...
+
+
+class BlobStore(UploadBlobStore, Protocol):
 
     async def create_read_url(self, blob_name: str, expires_at: datetime) -> str: ...
 

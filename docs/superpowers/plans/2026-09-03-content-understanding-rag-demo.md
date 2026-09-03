@@ -455,6 +455,23 @@ git commit -m "feat: add anonymous session isolation"
 
 ### Task 4: Implement file validation and direct upload
 
+**Execution research (2026-09-03):** Tasks 1-3 provide immutable camel-case boundary models,
+stable `AppError` handling, an injected `SessionService`, and only a session in-memory repository;
+the document/outbox repository, queue, and blob implementations are not present. The locked offline
+environment already contains Azure Identity and Azure Blob Storage. Its async SDK exposes
+`BlobServiceClient.get_user_delegation_key`, blob property/range download APIs, and synchronous
+`generate_blob_sas` with `BlobSasPermissions(create=True, write=True)`, so no dependency or network
+change is required. Task 4 will extend the existing protocols with an upload-specific blob adapter
+result and bounded package read, add one process-local document/outbox repository that simulates the
+required same-partition atomic commit, and keep Azure Table persistence and worker processing out of
+scope. ZIP validation will inspect the complete central directory from bounded blob bytes, reject
+encrypted/traversing packages, cap entry count and aggregate uncompressed size, and require the exact
+Office package markers. The API will resolve/rotate the existing anonymous cookie on both mutations,
+store dependencies only on `app.state`, and make lifespan dispatch optional/injectable for deterministic
+tests. The work is one coherent upload security boundary with a single state transition and outbox
+transaction; its adapters are narrow seams rather than independently deployable layers, so the task is
+atomic. No modernization scenario skill root, Execution stage, or Breakdown Hints files were supplied.
+
 **Files:**
 - Create: `backend/app/services/file_validation.py`
 - Create: `backend/app/services/blob_service.py`
