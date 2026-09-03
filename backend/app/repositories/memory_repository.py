@@ -6,6 +6,7 @@ from app.core.errors import ConcurrencyConflict
 from app.domain.models import (
     ContentResultCleanupMessage,
     DocumentRecord,
+    DocumentState,
     IngestionMessage,
     OutboxRecord,
     SessionRecord,
@@ -126,6 +127,31 @@ class MemoryDocumentRepository:
             for (stored_session, _), (record, version) in self._documents.items()
             if stored_session == session_key
         ]
+
+    async def list_lifecycle_candidates(
+        self, now: datetime, limit: int
+    ) -> list[VersionedDocument]:
+        candidates = [
+            VersionedDocument(value=record, etag=self._etag(version))
+            for record, version in self._documents.values()
+            if record.state is DocumentState.DELETING
+            or (record.state is not DocumentState.DELETED and record.expires_at <= now)
+        ]
+        candidates.sort(key=lambda item: (item.value.updated_at, str(item.value.document_id)))
+        return candidates[:limit]
+
+    async def list_deleted_before(
+        self, cutoff: datetime, limit: int
+    ) -> list[VersionedDocument]:
+        candidates = [
+            VersionedDocument(value=record, etag=self._etag(version))
+            for record, version in self._documents.values()
+            if record.state is DocumentState.DELETED
+            and record.deleted_at is not None
+            and record.deleted_at <= cutoff
+        ]
+        candidates.sort(key=lambda item: (item.value.deleted_at, str(item.value.document_id)))
+        return candidates[:limit]
 
     async def commit_queued_with_outbox(
         self,

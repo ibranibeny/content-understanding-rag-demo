@@ -1,18 +1,25 @@
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from io import BufferedIOBase
 from tempfile import SpooledTemporaryFile
 from typing import Any, Protocol, cast
+from uuid import UUID
 
 from azure.core import MatchConditions
 from azure.core.credentials_async import AsyncTokenCredential
-from azure.core.exceptions import AzureError, ResourceNotFoundError
+from azure.core.exceptions import (
+    AzureError,
+    ResourceExistsError,
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob import BlobSasPermissions, generate_blob_sas
-from azure.storage.blob.aio import BlobServiceClient
+from azure.storage.blob.aio import BlobLeaseClient, BlobServiceClient
 
-from app.core.errors import AppError
+from app.core.errors import AppError, TransientArtifactError
 from app.domain.protocols import BlobUploadGrant, Clock, VerifiedBlobUpload
 from app.services.file_validation import MAX_FILE_BYTES, TYPE_MAP, validate_office_package_stream
 
@@ -20,6 +27,37 @@ SAS_CLOCK_SKEW = timedelta(minutes=5)
 SAS_LIFETIME = timedelta(minutes=15)
 HEADER_BYTES = 16
 OFFICE_SPOOL_MEMORY_BYTES = 4 * 1024 * 1024
+LEASE_DURATION_SECONDS = 60
+LEASE_RENEW_INTERVAL_SECONDS = 30.0
+
+
+class DocumentLeaseBusy(Exception):
+    """The document control blob is leased by another operation."""
+
+
+class DocumentLeaseLost(Exception):
+    """The document lease was lost and fenced work must stop."""
+
+
+class LeaseClientLike(Protocol):
+    async def acquire(self, *, lease_duration: int) -> object: ...
+
+    async def renew(self) -> object: ...
+
+    async def release(self) -> object: ...
+
+
+class RenewableDocumentLease:
+    def __init__(self, lease_client: LeaseClientLike) -> None:
+        self._lease_client = lease_client
+        self._lost = False
+
+    def mark_lost(self) -> None:
+        self._lost = True
+
+    def ensure_valid(self) -> None:
+        if self._lost:
+            raise DocumentLeaseLost
 
 
 class Download(Protocol):
@@ -37,11 +75,21 @@ class BlobClientLike(Protocol):
         self, offset: int | None = None, length: int | None = None, **kwargs: Any
     ) -> Download: ...
 
+    async def upload_blob(self, data: bytes, *, overwrite: bool) -> object: ...
+
+    async def delete_blob(self, **kwargs: Any) -> object: ...
+
+
+class ContainerClientLike(Protocol):
+    def list_blobs(self, *, name_starts_with: str) -> AsyncIterator[Any]: ...
+
 
 class BlobServiceClientLike(Protocol):
     async def get_user_delegation_key(self, start: datetime, expiry: datetime) -> object: ...
 
     def get_blob_client(self, container: str, blob: str) -> BlobClientLike: ...
+
+    def get_container_client(self, container: str) -> ContainerClientLike: ...
 
 
 UploadGrant = BlobUploadGrant
@@ -50,6 +98,11 @@ VerifiedUpload = VerifiedBlobUpload
 
 SasFactory = Callable[..., str]
 SpoolFactory = Callable[..., Any]
+LeaseFactory = Callable[[BlobClientLike], LeaseClientLike]
+
+
+def _azure_lease_factory(blob: BlobClientLike) -> LeaseClientLike:
+    return cast(LeaseClientLike, BlobLeaseClient(cast(Any, blob)))
 
 
 class AzureBlobStore:
@@ -66,6 +119,8 @@ class AzureBlobStore:
         sas_factory: SasFactory = generate_blob_sas,
         spool_factory: SpoolFactory = SpooledTemporaryFile,
         office_concurrency: int = 2,
+        lease_factory: LeaseFactory = _azure_lease_factory,
+        lease_renew_interval: float = LEASE_RENEW_INTERVAL_SECONDS,
         own_credential: bool = False,
         own_service_client: bool = False,
     ) -> None:
@@ -77,6 +132,8 @@ class AzureBlobStore:
         self._sas_factory = sas_factory
         self._spool_factory = spool_factory
         self._office_semaphore = asyncio.Semaphore(office_concurrency)
+        self._lease_factory = lease_factory
+        self._lease_renew_interval = lease_renew_interval
         self._owns_credential = own_credential
         self._owns_service_client = own_service_client
         self._service_client_closed = False
@@ -211,6 +268,103 @@ class AzureBlobStore:
                 cast(BufferedIOBase, spool), required_entry
             )
             return VerifiedUpload(header=bytes(header), office_summary=summary)
+
+    @staticmethod
+    def _control_blob_name(session_key: str, document_id: UUID) -> str:
+        if len(session_key) != 64 or any(character not in "0123456789abcdef" for character in session_key):
+            raise ValueError("invalid session key")
+        return f"control/{session_key}/{document_id}.lock"
+
+    @staticmethod
+    def _artifact_prefixes(session_key: str, document_id: UUID) -> tuple[str, str]:
+        AzureBlobStore._control_blob_name(session_key, document_id)
+        return (
+            f"uploads/{session_key}/{document_id}/",
+            f"derived/{session_key}/{document_id}/",
+        )
+
+    async def _renew_lease(
+        self, lease: RenewableDocumentLease, stopped: asyncio.Event
+    ) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(stopped.wait(), timeout=self._lease_renew_interval)
+                return
+            except TimeoutError:
+                try:
+                    await lease._lease_client.renew()
+                except AzureError:
+                    lease.mark_lost()
+                    return
+
+    @asynccontextmanager
+    async def acquire_document_lease(
+        self, session_key: str, document_id: UUID
+    ) -> AsyncIterator[RenewableDocumentLease]:
+        control = self._client().get_blob_client(
+            self._container_name, self._control_blob_name(session_key, document_id)
+        )
+        try:
+            await control.upload_blob(b"", overwrite=False)
+        except ResourceExistsError:
+            pass
+        except AzureError:
+            raise DocumentLeaseBusy from None
+        lease_client = self._lease_factory(control)
+        try:
+            await lease_client.acquire(lease_duration=LEASE_DURATION_SECONDS)
+        except (ResourceExistsError, ResourceModifiedError):
+            raise DocumentLeaseBusy from None
+        except AzureError:
+            raise DocumentLeaseBusy from None
+        lease = RenewableDocumentLease(lease_client)
+        stopped = asyncio.Event()
+        renew_task = asyncio.create_task(self._renew_lease(lease, stopped))
+        try:
+            yield lease
+            lease.ensure_valid()
+        finally:
+            stopped.set()
+            renew_task.cancel()
+            try:
+                await renew_task
+            except asyncio.CancelledError:
+                pass
+            release_task = asyncio.create_task(lease_client.release())
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError:
+                await release_task
+                raise
+            except AzureError:
+                lease.mark_lost()
+
+    async def _artifact_names(self, session_key: str, document_id: UUID) -> list[str]:
+        container = self._client().get_container_client(self._container_name)
+        names: list[str] = []
+        try:
+            for prefix in self._artifact_prefixes(session_key, document_id):
+                async for item in container.list_blobs(name_starts_with=prefix):
+                    name = getattr(item, "name", None)
+                    if isinstance(name, str) and name.startswith(prefix):
+                        names.append(name)
+        except AzureError:
+            raise TransientArtifactError from None
+        return names
+
+    async def document_artifacts_exist(self, session_key: str, document_id: UUID) -> bool:
+        return bool(await self._artifact_names(session_key, document_id))
+
+    async def delete_document_artifacts(self, session_key: str, document_id: UUID) -> None:
+        for name in await self._artifact_names(session_key, document_id):
+            try:
+                await self._client().get_blob_client(self._container_name, name).delete_blob(
+                    delete_snapshots="include"
+                )
+            except ResourceNotFoundError:
+                pass
+            except AzureError:
+                raise TransientArtifactError from None
 
     async def aclose(self) -> None:
         if (

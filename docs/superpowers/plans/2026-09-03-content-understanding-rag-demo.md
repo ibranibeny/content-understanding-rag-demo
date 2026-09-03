@@ -615,6 +615,43 @@ and live Azurite transaction integration could not run; the mandatory transactio
 operation tuple shapes, ETags, duplicate/stale translation, pagination, and rollback/no-partial-commit
 behavior. The Compose file remains available for validation in a Docker-enabled environment.
 
+**Task 5B controller-decomposition research (2026-09-03):** This bounded unit is the control-blob
+lease abstraction and lease-fenced deletion service only; HTTP document routes, ingestion workers,
+and the Azure Search adapter remain outside scope. Task 5A provides optimistic document CRUD in both
+memory and Table repositories. The current document model lacks deletion linearization timestamps,
+the repository contract lacks a bounded durable lifecycle scan, and the Blob adapter exposes only
+single-name deletion. The installed async Blob SDK supports zero-byte `upload_blob(overwrite=False)`,
+`BlobLeaseClient.acquire(lease_duration=60)`, renewable leases, release, prefix listing, and conditional
+deletes. The implementation will derive control names exclusively as
+`control/{sessionKey}/{documentId}.lock`, expose a typed renewable async lease handle reusable by the
+future worker, distinguish busy/lost leases without leaking Azure exception text, and preserve injected
+client ownership. The deletion linearization point is an ETag-protected transition to `deleting` with
+`tombstonedAt` and `deletionRequestedAt` before any Blob/Search side effect. Sweeps select deleting or
+expired rows durably, tombstone expired live rows first, acquire the shared lease, re-read state/ETag,
+delete all server-derived original/derived blobs and Search chunks idempotently, then clear extraction,
+remote-result/source metrics and mark `deleted`. Busy leases and transient adapter failures retain the
+tombstone. Purge uses an exact 48-hour inclusive boundary and deletes only after both Blob and Search
+confirm absence. This is explicitly controller-pre-decomposed and atomic per the user instruction; no
+modernization scenario root, Execution stage, Breakdown Hints, standalone `task.md`, or
+`progress-details.md` was supplied, so this plan section is the required execution/progress artifact.
+
+**Task 5B execution progress (2026-09-03):** Tests were authored first and observed failing during
+collection for the missing deletion module and lease types, then again for the missing reusable worker
+write-lease boundary. The implementation adds deletion timestamps, bounded lifecycle/purge repository
+scans, queryable Table projection fields, renewable 60-second leases over zero-byte server-derived
+control blobs, cancellation-safe release, server-prefix artifact deletion, typed transient outcomes,
+ETag tombstoning, fenced idempotent sweeps, exact 48-hour purge, and the pre/post-acquisition worker
+guard. Focused deletion/Blob/Table tests pass (46 tests after the final worker-guard case); the prior
+full verification before that final case completed locked offline sync, Ruff, strict mypy, and 506
+passing tests. Final full verification and commit evidence follow in the task report.
+
+**Task 5B final verification (2026-09-03):** `uv sync --locked --offline` resolved entirely from
+the lock/cache; 46 focused deletion, Blob lease, and Table repository tests passed; Ruff reported no
+findings; strict mypy reported no issues across 24 application modules; and the full backend suite
+passed with 507 tests. `git diff --check` passed, and the reviewed diff remains confined to the Task
+5B service, domain/protocol, repository, test, safe error type, and execution-record scope. No HTTP
+document route, queue/worker, Search Azure adapter, ephemeral task, or dependency/feed change was added.
+
 **Files:**
 - Create: `backend/app/repositories/table_repository.py`
 - Create: `backend/app/services/deletion_service.py`

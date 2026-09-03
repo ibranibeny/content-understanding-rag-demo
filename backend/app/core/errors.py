@@ -22,6 +22,10 @@ class RepositoryDataError(Exception):
         super().__init__("Stored table entity is invalid.")
 
 
+class TransientArtifactError(Exception):
+    """A Blob or Search artifact operation can be retried safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class AppError(Exception):
     code: str

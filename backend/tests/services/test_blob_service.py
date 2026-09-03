@@ -3,12 +3,18 @@ from datetime import UTC, datetime, timedelta
 from tempfile import SpooledTemporaryFile
 from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
-from azure.core.exceptions import AzureError, ResourceNotFoundError
+from azure.core.exceptions import (
+    AzureError,
+    ResourceExistsError,
+    ResourceModifiedError,
+    ResourceNotFoundError,
+)
 
 from app.core.errors import AppError
-from app.services.blob_service import AzureBlobStore
+from app.services.blob_service import AzureBlobStore, DocumentLeaseBusy, DocumentLeaseLost
 
 NOW = datetime(2026, 9, 3, 10, 0, tzinfo=UTC)
 
@@ -429,3 +435,171 @@ async def test_verify_rejects_short_conditional_read() -> None:
     with pytest.raises(AppError) as caught:
         await store.verify_upload("file.pdf", '"etag"', len(blob.data), "application/pdf", office=False)
     assert caught.value.code == "upload_size_mismatch"
+
+
+class LeaseBlob(BlobClient):
+    def __init__(self) -> None:
+        super().__init__(b"")
+        self.upload_calls: list[tuple[bytes, bool]] = []
+        self.delete_calls = 0
+
+    async def upload_blob(self, data: bytes, *, overwrite: bool) -> None:
+        self.upload_calls.append((data, overwrite))
+
+    async def delete_blob(self, **kwargs: object) -> None:
+        del kwargs
+        self.delete_calls += 1
+
+
+class LeaseClient:
+    def __init__(self) -> None:
+        self.acquire_calls: list[int] = []
+        self.renew_calls = 0
+        self.release_calls = 0
+        self.acquire_error: Exception | None = None
+        self.renew_error: Exception | None = None
+        self.release_started = asyncio.Event()
+        self.release_continue = asyncio.Event()
+        self.block_release = False
+
+    async def acquire(self, *, lease_duration: int) -> None:
+        self.acquire_calls.append(lease_duration)
+        if self.acquire_error:
+            raise self.acquire_error
+
+    async def renew(self) -> None:
+        self.renew_calls += 1
+        if self.renew_error:
+            raise self.renew_error
+
+    async def release(self) -> None:
+        self.release_calls += 1
+        self.release_started.set()
+        if self.block_release:
+            await self.release_continue.wait()
+
+
+class PrefixService(BlobService):
+    def __init__(self, control: LeaseBlob, names: list[str]) -> None:
+        super().__init__(control)
+        self.control = control
+        self.names = names
+        self.requested_names: list[str] = []
+
+    def get_blob_client(self, container: str, blob: str) -> LeaseBlob:
+        del container
+        self.requested_names.append(blob)
+        return self.control
+
+    def get_container_client(self, container: str):  # type: ignore[no-untyped-def]
+        del container
+        service = self
+
+        class Container:
+            def list_blobs(self, *, name_starts_with: str):  # type: ignore[no-untyped-def]
+                async def values():  # type: ignore[no-untyped-def]
+                    for name in service.names:
+                        if name.startswith(name_starts_with):
+                            yield SimpleNamespace(name=name)
+                return values()
+
+        return Container()
+
+
+async def test_control_lease_uses_server_derived_zero_byte_blob_and_renews() -> None:
+    control = LeaseBlob()
+    lease_client = LeaseClient()
+    service = PrefixService(control, [])
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=service,
+        lease_factory=lambda blob: lease_client, lease_renew_interval=0.01,
+    )
+
+    async with store.acquire_document_lease("a" * 64, UUID("9f4b8484-9f6b-44f2-b4d4-e5e7687c80df")) as lease:
+        await asyncio.sleep(0.03)
+        lease.ensure_valid()
+
+    assert service.requested_names[0] == (
+        "control/" + "a" * 64 + "/9f4b8484-9f6b-44f2-b4d4-e5e7687c80df.lock"
+    )
+    assert control.upload_calls == [(b"", False)]
+    assert lease_client.acquire_calls == [60]
+    assert lease_client.renew_calls >= 1
+    assert lease_client.release_calls == 1
+
+
+async def test_control_blob_already_existing_is_safe_and_busy_lease_is_typed() -> None:
+    control = LeaseBlob()
+
+    async def exists(data: bytes, *, overwrite: bool) -> None:
+        del data, overwrite
+        raise ResourceExistsError("exists")
+
+    control.upload_blob = exists  # type: ignore[method-assign]
+    lease_client = LeaseClient()
+    lease_client.acquire_error = ResourceModifiedError("busy")
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(control, []),
+        lease_factory=lambda blob: lease_client,
+    )
+    with pytest.raises(DocumentLeaseBusy):
+        async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+            raise AssertionError("unreachable")
+
+
+async def test_renewal_loss_is_observable_and_still_releases() -> None:
+    control = LeaseBlob()
+    lease_client = LeaseClient()
+    lease_client.renew_error = ResourceModifiedError("lost private lease")
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(control, []),
+        lease_factory=lambda blob: lease_client, lease_renew_interval=0.01,
+    )
+    with pytest.raises(DocumentLeaseLost):
+        async with store.acquire_document_lease("a" * 64, UUID(int=1)) as lease:
+            await asyncio.sleep(0.02)
+            lease.ensure_valid()
+    assert lease_client.release_calls == 1
+
+
+async def test_cancellation_during_body_waits_for_release() -> None:
+    control = LeaseBlob()
+    lease_client = LeaseClient()
+    lease_client.block_release = True
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=PrefixService(control, []),
+        lease_factory=lambda blob: lease_client,
+    )
+
+    async def work() -> None:
+        async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+            await asyncio.Future()
+
+    task = asyncio.create_task(work())
+    await asyncio.sleep(0)
+    task.cancel()
+    await lease_client.release_started.wait()
+    assert not task.done()
+    lease_client.release_continue.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert lease_client.release_calls == 1
+
+
+async def test_document_artifacts_use_only_server_prefixes_and_missing_is_safe() -> None:
+    document_id = UUID("9f4b8484-9f6b-44f2-b4d4-e5e7687c80df")
+    session = "a" * 64
+    names = [
+        f"uploads/{session}/{document_id}/private.pdf",
+        f"derived/{session}/{document_id}/content.md",
+        f"uploads/{'b' * 64}/{document_id}/other.pdf",
+    ]
+    blob = LeaseBlob()
+    service = PrefixService(blob, names)
+    store = AzureBlobStore("acct", "uploads", Clock(), service_client=service)
+
+    assert await store.document_artifacts_exist(session, document_id)
+    await store.delete_document_artifacts(session, document_id)
+
+    assert service.requested_names[-2:] == names[:2]
+    assert blob.delete_calls == 2

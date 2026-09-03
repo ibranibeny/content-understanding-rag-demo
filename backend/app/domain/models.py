@@ -104,6 +104,8 @@ class DocumentRecord(ContractModel):
     token_count: int | None = Field(default=None, ge=0)
     failure_code: str | None = None
     failure_retryable: bool = False
+    tombstoned_at: UtcDateTime | None = None
+    deletion_requested_at: UtcDateTime | None = None
     deleted_at: UtcDateTime | None = None
 
 

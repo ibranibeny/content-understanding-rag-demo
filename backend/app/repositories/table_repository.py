@@ -15,7 +15,13 @@ from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.core.errors import ConcurrencyConflict, RepositoryDataError
-from app.domain.models import DocumentRecord, OutboxRecord, SessionRecord, VersionedDocument
+from app.domain.models import (
+    DocumentRecord,
+    DocumentState,
+    OutboxRecord,
+    SessionRecord,
+    VersionedDocument,
+)
 
 CODEC_VERSION = 1
 SESSION_ROW_KEY = "session"
@@ -75,6 +81,12 @@ def _entity(record: SessionRecord | DocumentRecord | OutboxRecord, row_key: str)
     if isinstance(record, OutboxRecord):
         result["Sent"] = record.sent_at is not None
         result["CreatedAt"] = record.created_at.isoformat().replace("+00:00", "Z")
+    if isinstance(record, DocumentRecord):
+        result["State"] = record.state.value
+        result["ExpiresAt"] = record.expires_at.isoformat().replace("+00:00", "Z")
+        result["UpdatedAt"] = record.updated_at.isoformat().replace("+00:00", "Z")
+        if record.deleted_at is not None:
+            result["DeletedAt"] = record.deleted_at.isoformat().replace("+00:00", "Z")
     return result
 
 
@@ -250,6 +262,61 @@ class TableDocumentRepository:
         ]
         documents.sort(key=lambda item: (item.value.created_at, str(item.value.document_id)))
         return documents
+
+    async def list_lifecycle_candidates(
+        self, now: datetime, limit: int
+    ) -> list[VersionedDocument]:
+        pager = self._client.query_entities(
+            "RowKey ge @start and RowKey lt @end and "
+            "(State eq @deleting or (State ne @deleted and ExpiresAt le @now))",
+            parameters={
+                "start": DOCUMENT_ROW_PREFIX,
+                "end": "documenu",
+                "deleting": DocumentState.DELETING.value,
+                "deleted": DocumentState.DELETED.value,
+                "now": now.isoformat().replace("+00:00", "Z"),
+            },
+        )
+        decoded = [
+            VersionedDocument(value=_decode(entity, DocumentRecord), etag=_etag(entity))
+            for entity in await _all_pages(pager)
+            if str(entity.get("RowKey", "")).startswith(DOCUMENT_ROW_PREFIX)
+        ]
+        documents = [
+            item
+            for item in decoded
+            if item.value.state is DocumentState.DELETING
+            or (item.value.state is not DocumentState.DELETED and item.value.expires_at <= now)
+        ]
+        documents.sort(key=lambda item: (item.value.updated_at, str(item.value.document_id)))
+        return documents[:limit]
+
+    async def list_deleted_before(
+        self, cutoff: datetime, limit: int
+    ) -> list[VersionedDocument]:
+        pager = self._client.query_entities(
+            "RowKey ge @start and RowKey lt @end and State eq @deleted and DeletedAt le @cutoff",
+            parameters={
+                "start": DOCUMENT_ROW_PREFIX,
+                "end": "documenu",
+                "deleted": DocumentState.DELETED.value,
+                "cutoff": cutoff.isoformat().replace("+00:00", "Z"),
+            },
+        )
+        decoded = [
+            VersionedDocument(value=_decode(entity, DocumentRecord), etag=_etag(entity))
+            for entity in await _all_pages(pager)
+            if str(entity.get("RowKey", "")).startswith(DOCUMENT_ROW_PREFIX)
+        ]
+        documents = [
+            item
+            for item in decoded
+            if item.value.state is DocumentState.DELETED
+            and item.value.deleted_at is not None
+            and item.value.deleted_at <= cutoff
+        ]
+        documents.sort(key=lambda item: (item.value.deleted_at, str(item.value.document_id)))
+        return documents[:limit]
 
     async def commit_queued_with_outbox(
         self, document: DocumentRecord, document_etag: str, outbox: OutboxRecord
