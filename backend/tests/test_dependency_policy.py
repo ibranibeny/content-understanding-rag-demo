@@ -62,14 +62,16 @@ def assert_enterprise_feed_only(
     for document in (pyproject, lockfile):
         for value in _iter_strings(document):
             parsed = urlsplit(value)
-            if parsed.scheme.lower() == "file":
+            scheme = parsed.scheme.lower()
+            if scheme == "file":
                 assert parsed.hostname in (None, ""), (
                     f"file dependency URL must not include a host: {parsed.hostname}"
                 )
                 continue
-            if parsed.scheme.lower() not in {"http", "https"} and parsed.hostname is None:
+            if scheme not in {"http", "https"} and parsed.hostname is None:
                 continue
 
+            assert scheme == "https", "network dependency URL must use HTTPS"
             host = parsed.hostname.lower() if parsed.hostname else None
             assert host is not None, "network dependency URL must include a host"
             assert host in APPROVED_DEPENDENCY_HOSTS, (
@@ -116,6 +118,23 @@ def test_dependency_policy_rejects_unrelated_azure_artifacts_hosts() -> None:
     mutated_lockfile["unexpected-source"] = UNRELATED_AZURE_ARTIFACTS_URL
 
     with pytest.raises(AssertionError, match="unrelated.pkgs.visualstudio.com"):
+        assert_enterprise_feed_only(pyproject, mutated_lockfile)
+
+
+@pytest.mark.parametrize(
+    "unsupported_url",
+    [
+        "http://packagefeedproxy.microsoft.io/pypi/simple/",
+        "ftp://ms-feed-2.pkgs.visualstudio.com/path",
+        "//ms-feed-12.pkgs.visualstudio.com/path",
+    ],
+)
+def test_dependency_policy_rejects_non_https_network_urls(unsupported_url: str) -> None:
+    pyproject, lockfile = _load_dependency_documents()
+    mutated_lockfile = copy.deepcopy(lockfile)
+    mutated_lockfile["unexpected-source"] = unsupported_url
+
+    with pytest.raises(AssertionError, match="HTTPS"):
         assert_enterprise_feed_only(pyproject, mutated_lockfile)
 
 

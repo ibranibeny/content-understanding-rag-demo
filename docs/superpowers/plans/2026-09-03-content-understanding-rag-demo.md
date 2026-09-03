@@ -85,6 +85,16 @@ resolved dependency graphs. The task is atomic because its two health-shell test
 the single monorepo bootstrap gate and neither introduces a reusable feature boundary. No
 modernization scenario skill root or Breakdown Hints files were supplied for this task.
 
+**Final quality remediation research (2026-09-03):** The dependency-policy helper in
+`backend/tests/test_dependency_policy.py` currently approves a network URL solely by its parsed
+hostname after treating both HTTP and HTTPS as network schemes. As a result, approved hosts pass
+over insecure HTTP, and host-bearing unsupported schemes such as FTP also reach the host allowlist
+and pass. The correction is confined to the policy helper and mutation coverage: every host-bearing
+URL must use exactly HTTPS and an exact approved hostname, while existing hostless local file URLs
+remain allowed and hosted file URLs remain rejected. This is one atomic validation-rule change;
+there is no independent unit or decision point to split. No modernization scenario skill root or
+Breakdown Hints files were supplied for this remediation.
+
 **Files:**
 - Create: `backend/pyproject.toml`
 - Create: `backend/uv.lock`
