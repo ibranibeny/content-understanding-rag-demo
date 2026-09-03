@@ -53,3 +53,8 @@ line-length = 100
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+[[tool.uv.index]]
+name = "microsoft-enterprise"
+url = "https://packagefeedproxy.microsoft.io/pypi/simple/"
+default = true
