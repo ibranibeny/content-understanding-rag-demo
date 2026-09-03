@@ -223,3 +223,22 @@ def test_production_rejects_unsafe_or_non_https_frontend_origins(value: str) -> 
 def test_production_requires_frontend_origin_override() -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"app_mode": "production"})
+
+
+@pytest.mark.parametrize("app_mode", ["local", "test"])
+def test_azurite_connection_string_is_permitted_only_outside_production(app_mode: str) -> None:
+    settings = Settings.model_validate(
+        {"app_mode": app_mode, "azurite_table_connection_string": "UseDevelopmentStorage=true"}
+    )
+    assert settings.azurite_table_connection_string == "UseDevelopmentStorage=true"
+
+
+def test_production_rejects_nonempty_azurite_connection_string() -> None:
+    with pytest.raises(ValidationError, match="connection string"):
+        Settings.model_validate(
+            {
+                "app_mode": "production",
+                "frontend_origin": "https://frontend.example.com",
+                "azurite_table_connection_string": "UseDevelopmentStorage=true",
+            }
+        )

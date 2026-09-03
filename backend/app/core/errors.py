@@ -15,6 +15,13 @@ class ConcurrencyConflict(Exception):
     """A repository write was rejected because its ETag was stale."""
 
 
+class RepositoryDataError(Exception):
+    """Persisted repository data could not be decoded safely."""
+
+    def __init__(self) -> None:
+        super().__init__("Stored table entity is invalid.")
+
+
 @dataclass(frozen=True, slots=True)
 class AppError(Exception):
     code: str

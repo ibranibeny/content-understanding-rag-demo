@@ -1,0 +1,19 @@
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    volumes:
+      - azurite-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(10002,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  azurite-data:

@@ -160,6 +160,9 @@ class Settings(BaseSettings):
         default="ingestion-poison", validation_alias="INGESTION_POISON_QUEUE"
     )
     table_name: str = Field(default="workshop", validation_alias="TABLE_NAME")
+    azurite_table_connection_string: str | None = Field(
+        default=None, validation_alias="AZURITE_TABLE_CONNECTION_STRING"
+    )
 
     search_endpoint: HttpsEndpoint = Field(
         default="https://localhost", validation_alias="SEARCH_ENDPOINT"
@@ -224,6 +227,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_frontend_origin(self) -> "Settings":
+        if self.app_mode == "production" and self.azurite_table_connection_string:
+            raise ValueError("production must not use a Table connection string")
         if self.app_mode == "production" and self.frontend_origin == "http://testserver":
             raise ValueError("production frontend origin must be configured")
         self.frontend_origin = validate_origin(

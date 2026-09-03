@@ -570,6 +570,51 @@ git commit -m "feat: add secure direct document uploads"
 
 ### Task 5: Add Azure Table repositories and lease-fenced deletion
 
+**Execution research (2026-09-03):** The requested linked worktree is clean on
+`feature/content-understanding-rag-demo`, `uv sync --locked --offline` succeeds from the existing
+lockfile, and the complete backend baseline is 475 passing tests. Tasks 1-4 already provide frozen
+session/document/outbox models, strict Azure ETag validation, a shared in-memory application
+repository with atomic `reserve_and_create`, same-partition-like queued/outbox commits, injected
+FastAPI services, an ownership-aware Blob adapter, exact-origin mutation guards, and stable error
+envelopes. The installed Azure SDK exposes async `TableClient.submit_transaction` and paged
+`query_entities`, plus `BlobLeaseClient.acquire(lease_duration=60)`, `renew`, and `release`; the lease
+client itself has no async `close`, so closure belongs to owned blob/service clients. Task 5 must add
+primitive/versioned entity codecs for all model fields, one injected async Table client adapter,
+deterministic retry outbox IDs, a durable deleting-state sweep with 48-hour tombstone retention, and
+a renewable control-blob lease abstraction shared by future workers without implementing worker
+processing. Local/test may use Azurite's documented development connection string, while production
+must use `DefaultAzureCredential` and reject connection-string/shared-key configuration. The requested
+scope spans Table persistence, lease infrastructure, lifecycle orchestration, and HTTP contracts, but
+they form one externally visible document-lifecycle feature with explicit seams and a single required
+verification/commit gate. No modernization scenario skill root, Execution stage, Breakdown Hints,
+workflow folder, standalone `task.md`, or `progress-details.md` was forwarded; this plan section is the
+execution reference and will not have its checkboxes changed.
+
+**Task 5A controller-decomposition research (2026-09-03):** This bounded unit is only the Azure
+Table/Azurite persistence foundation; leases, deletion orchestration, and document routes remain for
+later controller units. The existing `SessionRepository`, `DocumentRepository`, and
+`SessionDocumentRepository` contracts require session CRUD, document CRUD/listing, atomic quota
+reservation plus document creation, and atomic queued-document plus outbox creation. The installed
+async Azure Tables SDK supports conditional `update`/`delete` transaction tuples and continuation
+token paging. Entities will share `PartitionKey=session:{sessionKey}` with `session`,
+`document:{uuid}`, and `outbox:{outboxId}` row keys; a versioned JSON codec keeps Pydantic's existing
+camel-case boundary shape while all Table properties remain strict primitives. Azure service errors
+for stale, duplicate, and missing mutations map to the repository's stable `ConcurrencyConflict`.
+Construction will accept an async TableClient-shaped protocol for deterministic tests, close only
+owned dependencies, use `DefaultAzureCredential` with the account Table endpoint in production, and
+permit the public Azurite development connection string only in local/test configuration. The unit is
+explicitly pre-decomposed and atomic per the controller instruction; no modernization scenario root,
+Execution stage, or Breakdown Hints artifacts were supplied or requested.
+
+**Task 5A execution results (2026-09-03):** Strict TDD was observed: the focused repository/config
+suite first failed during collection because the Table repository and stable codec error did not
+exist, then passed with 135 tests after implementation. Final verification completed locked offline
+sync, Ruff, strict mypy over all application modules, and the full backend suite with 489 passing
+tests. Docker is not installed or available on `PATH` in this environment, so `docker compose config`
+and live Azurite transaction integration could not run; the mandatory transactional fake covers
+operation tuple shapes, ETags, duplicate/stale translation, pagination, and rollback/no-partial-commit
+behavior. The Compose file remains available for validation in a Docker-enabled environment.
+
 **Files:**
 - Create: `backend/app/repositories/table_repository.py`
 - Create: `backend/app/services/deletion_service.py`
