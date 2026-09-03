@@ -1,0 +1,16 @@
+:root {
+  color-scheme: dark;
+  --ink: #07111f;
+  --panel: #0b1728;
+  --panel-raised: #101e32;
+  --line: #243751;
+  --text: #e8f0fa;
+  --muted: #91a3b8;
+  --cyan: #3ee7f3;
+  --indigo: #8b86ff;
+  --amber: #ffbf69;
+  --danger: #ff7d8a;
+  --sans: Inter, Aptos, "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --radius: 5px;
+}

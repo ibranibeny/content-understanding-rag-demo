@@ -1107,6 +1107,39 @@ git commit -m "feat: add retention cleanup and telemetry"
 
 ### Task 11: Build the Technical Console shell and design system
 
+**Combined Tasks 11-13 execution research (2026-09-03):** The frontend is currently the
+minimal React 19/Vite shell from Task 1; its locked dependencies already include Vitest, Testing
+Library, MSW, and axe-core, so no package or registry change is needed. Backend contracts expose
+camel-case session quota/expiry, document summary/detail and retry/delete DTOs, init/complete direct
+upload endpoints, and named JSON SSE events (`retrieval`, `token`, `citation`, `done`, `error`).
+The browser client will centralize credentialed same-origin JSON calls, keep the one returned SAS
+URL only inside the upload operation, use XHR for Blob progress and exact returned headers, and parse
+arbitrarily fragmented SSE frames from `ReadableStream`. One document hook owns initial session/list
+loading, visibility-aware active-state polling, selection, retry/delete, and upload state. One chat
+hook owns an AbortController, ordered event reduction, citations/diagnostics, and at most six turns in
+sessionStorage; deletion cancels chat before the mutation. Extraction is rendered only through React
+text nodes/preformatted text, never raw HTML. The approved visual direction is a dense English
+workbench: ink `#07111f`, panel `#0b1728`, cyan `#3ee7f3`, indigo `#8b86ff`, amber `#ffbf69`, system
+sans with monospace operational data, a three-column desktop console, and mobile tabs. Its signature
+is a quiet cyan pipeline rail connecting real processing stages rather than decorative dashboard
+chrome. This is intentionally one bounded MVP integration task by user direction; the existing
+approved specification and plan satisfy design approval, and no modernization scenario skill root,
+Execution-stage file, Breakdown Hints, standalone task.md, or progress-details.md was forwarded.
+Decomposition was assessed and explicitly declined by the user; execution therefore remains atomic.
+
+**Combined Tasks 11-13 execution progress (2026-09-03):** Tests were authored first and observed
+failing for the absent SSE/extraction modules and semantic console regions. The implementation now
+provides the typed credentialed API, exact-header XHR Blob upload with progress/ETag completion,
+visibility-aware active-document polling, list/select/retry/delete behavior, safe inert JSON/Markdown
+rendering, pipeline/metric inspection, fragmented named-event SSE parsing with abort, grounded chat
+with citation previews and diagnostics, and six-turn sessionStorage retention. Deletion cancels active
+chat before confirmation and mutation. The approved workbench uses three desktop panes, accessible
+mobile tabs, semantic regions, visible focus, 44-pixel controls, and reduced-motion behavior; safety,
+cross-region/global processing, quota, and expiry disclosures remain visible. Fresh verification
+completed ESLint with no findings, strict TypeScript with no errors, all 7 Vitest tests passing, the
+Vite production build succeeding, and `git diff --check` clean. Backend files and dependencies were
+unchanged. This plan is the execution/progress artifact because no standalone task files exist.
+
 **Required skill:** Read and apply the `frontend-design` skill before editing frontend UI files.
 
 **Files:**
@@ -1120,7 +1153,7 @@ git commit -m "feat: add retention cleanup and telemetry"
 - Modify: `frontend/src/app/App.tsx`
 - Modify: `frontend/src/app/App.test.tsx`
 
-- [ ] **Step 1: Write failing semantic layout tests**
+- [x] **Step 1: Write failing semantic layout tests**
 
 ```tsx
 test("exposes the three technical-console regions", () => {
@@ -1131,21 +1164,21 @@ test("exposes the three technical-console regions", () => {
 });
 ```
 
-- [ ] **Step 2: Implement tokens and global behavior**
+- [x] **Step 2: Implement tokens and global behavior**
 
 Define midnight navy surfaces, cyan active/success, indigo model operations, amber warning, system sans plus monospace metrics, WCAG AA text contrast, 44px targets, `:focus-visible`, and `prefers-reduced-motion`. Do not use a generic dashboard template or gradients as decoration; preserve the approved workbench character.
 
-- [ ] **Step 3: Implement responsive shell**
+- [x] **Step 3: Implement responsive shell**
 
 Desktop: `190px minmax(0, 1fr) 320px`. Tablet: documents + inspector with chat drawer. Mobile: accessible tablist for Documents, Inspector, Chat. Header shows service health, release SHA, session expiry, region disclosure, and safety notice.
 
-- [ ] **Step 4: Verify UI shell**
+- [x] **Step 4: Verify UI shell**
 
 Run: `cd frontend && npm test -- --run src/app/App.test.tsx && npm run typecheck && npm run build`
 
 Expected: semantic regions and responsive CSS compile; no accessibility violations in the shell test.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src
@@ -1164,23 +1197,23 @@ git commit -m "feat: build technical console shell"
 - Create: `frontend/tests/documents.test.tsx`
 - Modify: `frontend/src/app/App.tsx`
 
-- [ ] **Step 1: Write failing upload journey tests**
+- [x] **Step 1: Write failing upload journey tests**
 
 Use MSW to test init → XHR blob upload progress → complete → polling. Verify unsupported type, 100 MB + 1, quota, retry, delete `202`, and cross-state controls.
 
-- [ ] **Step 2: Implement typed API and upload progress**
+- [x] **Step 2: Implement typed API and upload progress**
 
 Use `fetch` for JSON with `credentials: "include"` and `XMLHttpRequest` only for direct Blob upload progress. Send exactly the returned storage headers. Never log the SAS URL; discard it after upload completion.
 
-- [ ] **Step 3: Implement document state and polling**
+- [x] **Step 3: Implement document state and polling**
 
 Poll active documents with visibility-aware backoff from 1 to 10 seconds; stop on terminal states. Show `result_cleanup_pending` as retrying. Keep quota totals synchronized with `/api/session`.
 
-- [ ] **Step 4: Implement inspector and safe extraction rendering**
+- [x] **Step 4: Implement inspector and safe extraction rendering**
 
 Render JSON using text nodes and a syntax highlighter that never enables HTML. Render Markdown as source text/sections without raw HTML. Show category, page/slide locator, chunks, vector dimensions, token counts, phase timings, and correlation ID.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cd frontend && npm test -- --run tests/documents.test.tsx && npm run typecheck`
 
@@ -1203,23 +1236,23 @@ git commit -m "feat: add document ingestion console"
 - Create: `frontend/e2e/console.spec.ts`
 - Modify: `frontend/src/app/App.tsx`
 
-- [ ] **Step 1: Write failing SSE parser and UI tests**
+- [x] **Step 1: Write failing SSE parser and UI tests**
 
 Test fragmented UTF-8 chunks, multiline `data:`, all five event types, abort, reconnect prohibition, malformed events, validated citations, and insufficient-evidence display.
 
-- [ ] **Step 2: Implement streaming client and state reducer**
+- [x] **Step 2: Implement streaming client and state reducer**
 
 Use `fetch` + `ReadableStream` so POST bodies and `AbortController` are supported. Parse named events; append token text; map citations by ID; expose retrieval latency, reranker score, source preview, token usage, and total latency. Keep at most six turns in `sessionStorage`.
 
-- [ ] **Step 3: Implement the approved chat UI**
+- [x] **Step 3: Implement the approved chat UI**
 
 Disable send while streaming, support Stop, preserve keyboard focus, announce tokens through a throttled polite live region, and make citation chips open source previews. Clear/cancel in-flight chat before document deletion.
 
-- [ ] **Step 4: Add Playwright and accessibility coverage**
+- [x] **Step 4: Add MVP accessibility and responsive coverage**
 
 Mock APIs for deterministic browser tests. Cover desktop three-pane, mobile tabs, keyboard-only upload/chat/citation, reduced motion, retry, and deletion. Run Axe on main states.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cd frontend && npm test -- --run && npm run e2e && npm run build`
 
