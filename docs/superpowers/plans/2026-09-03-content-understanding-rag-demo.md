@@ -113,7 +113,7 @@ Breakdown Hints files were supplied for this remediation.
 - Create: `.editorconfig`
 - Create: `README.md`
 
-- [ ] **Step 1: Scaffold dependency manifests**
+- [x] **Step 1: Scaffold dependency manifests**
 
 Use Python 3.12 and `uv`. Add runtime dependencies for FastAPI, Uvicorn, Pydantic Settings, Azure Identity, Blob/Queue/Table Storage, Azure AI Search, Azure Monitor OpenTelemetry, HTTPX, OpenAI, `tiktoken`, and `python-multipart`. Add development dependencies for pytest, pytest-asyncio, pytest-cov, mypy, Ruff, and Azurite-compatible tests. Define these scripts in `backend/pyproject.toml`:
 
@@ -139,7 +139,7 @@ strict = true
 
 Use React + TypeScript + Vite and add Vitest, Testing Library, MSW, ESLint, Prettier, Playwright, and `axe-core`. Define `lint`, `typecheck`, `test`, `test:coverage`, `build`, and `e2e` scripts.
 
-- [ ] **Step 2: Write failing health and shell tests**
+- [x] **Step 2: Write failing health and shell tests**
 
 ```python
 # backend/tests/test_health.py
@@ -165,7 +165,7 @@ test("renders the workshop identity and safety notice", () => {
 });
 ```
 
-- [ ] **Step 3: Run tests to verify failure**
+- [x] **Step 3: Run tests to verify failure**
 
 Run: `cd backend && uv sync && uv run pytest tests/test_health.py -q`
 
@@ -175,7 +175,7 @@ Run: `cd frontend && npm install && npm test -- --run src/app/App.test.tsx`
 
 Expected: FAIL because the app shell does not exist.
 
-- [ ] **Step 4: Implement the minimum app shells**
+- [x] **Step 4: Implement the minimum app shells**
 
 ```python
 # backend/app/main.py
@@ -218,7 +218,7 @@ export function App() {
 }
 ```
 
-- [ ] **Step 5: Verify the bootstrap**
+- [x] **Step 5: Verify the bootstrap**
 
 Run: `cd backend && uv run ruff check . && uv run mypy app && uv run pytest -q`
 
@@ -228,7 +228,7 @@ Run: `cd frontend && npm run lint && npm run typecheck && npm test -- --run && n
 
 Expected: all checks pass and `dist/` is generated.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .editorconfig README.md backend frontend
