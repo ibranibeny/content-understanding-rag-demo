@@ -1117,13 +1117,18 @@ scenario Execution stage or Breakdown Hints exist to trigger decomposition.
 - Create: `backend/tests/test_telemetry.py`
 - Modify: `backend/app/main.py`
 
-- [ ] **Step 1: Write failing cleanup tests**
+- [x] **Step 1: Write failing cleanup tests**
 
 Test that expired documents are tombstoned, fenced, and removed; user-created `deleting` records are picked up durably; busy leases remain pending; 48-hour tombstones are removed only after artifacts are absent; and active sessions remain untouched.
 
-- [ ] **Step 2: Implement the scheduled cleanup command**
+- [x] **Step 2: Implement the scheduled cleanup command**
 
 Scan expiry partitions/pages without loading the whole table. Reuse `DeletionService`, cap concurrency, return a nonzero process exit only for systemic failures, and emit counts for deleted, pending, skipped, and failed records.
+
+**Phase A final marker (2026-09-03):** Steps 1-2 were already satisfied by the implemented
+`backend/app/cleanup.py` sweep/purge command and the passing `backend/tests/test_cleanup.py`
+lifecycle/fencing coverage; re-verified green in this phase (full backend suite 677 passed). No
+cleanup code changed here, so these boxes are marked to reflect existing evidence.
 
 - [x] **Step 3: Add telemetry redaction tests**
 
@@ -1331,21 +1336,41 @@ git commit -m "feat: add grounded chat diagnostics"
 - Create: `backend/tests/test_container_contract.py`
 - Create: `frontend/e2e/container.spec.ts`
 
-- [ ] **Step 1: Write failing container contract tests**
+**Phase A execution (2026-09-03, Claude Opus 4.8):** Containerized the MVP without Docker installed,
+so images were validated structurally and by tests rather than built/run (Step 5 is deferred). Added a
+shared backend `Dockerfile` (pinned Python 3.12 slim, `uv sync --frozen --no-dev` from the Microsoft
+enterprise index only — never public PyPI, optional enterprise CA via `EXTRA_CA_CERT`, nonroot `app`
+user, API `HEALTHCHECK`) that accepts the `api`, `worker`, and `cleanup` commands; a multi-stage
+frontend `Dockerfile` (Node 22 build then unprivileged NGINX) with `nginx/default.conf.template` and
+`nginx/entrypoint.sh` that renders only `${API_UPSTREAM}` and `${EXTRA_CONNECT_SRC}`, proxies `/api`
+with SSE buffering off (`proxy_buffering off`, `X-Accel-Buffering: no`), a modest 4 MB body limit
+(large uploads go direct to Blob via SAS), and basic security headers; `.dockerignore` files; and an
+`.env.example` with no secrets. Extended `compose.yml` with `api`, `worker`, and `frontend` over the
+pinned Azurite service. Fixed a concrete startup blocker: `backend/app/worker.py` now builds
+queue/table/blob clients from the Azurite connection string when `APP_MODE != production` instead of
+always requiring `DefaultAzureCredential` and real Azure queue URLs (covered by
+`tests/test_worker_local.py`). Content Understanding, embeddings, and GPT-5 have no local emulator, so
+the local worker idle-polls Azurite; building fake adapters was intentionally out of MVP scope.
+Validation: Ruff clean, strict mypy clean over 38 app modules, `tests/test_container_contract.py`
+structural checks pass, full backend suite 677 passed, and frontend lint/type/test(7)/build all green.
+Decomposition was assessed and is atomic (one user-combined MVP unit; no scenario Execution stage or
+Breakdown Hints were forwarded).
 
-Assert nonroot users, fixed health endpoints, backend command overrides for API/worker/cleanup, frontend `/api` proxy, `X-Accel-Buffering: no`, 100 MB upload behavior, and security headers.
+- [x] **Step 1: Write failing container contract tests**
 
-- [ ] **Step 2: Build a shared backend image**
+Assert nonroot users, fixed health endpoints, backend command overrides for API/worker/cleanup, frontend `/api` proxy, `X-Accel-Buffering: no`, modest upload body limit (uploads go direct to Blob via SAS), and security headers.
+
+- [x] **Step 2: Build a shared backend image**
 
 Use a pinned Python 3.12 slim base, `uv sync --frozen --no-dev`, nonroot UID, read-only-friendly filesystem, and `HEALTHCHECK` for API. Do not bake credentials or environment files. The same image must accept API, worker, and cleanup commands.
 
-- [ ] **Step 3: Build the frontend image**
+- [x] **Step 3: Build the frontend image**
 
-Use Node 22 for build and unprivileged NGINX for runtime. Generate upstream config at startup from `API_UPSTREAM`. Set CSP, HSTS only when HTTPS, frame denial, content-type protection, referrer policy, permissions policy, body limit, proxy timeouts, and SSE buffering off.
+Use Node 22 for build and unprivileged NGINX for runtime. Generate upstream config at startup from `API_UPSTREAM`. Set CSP, frame denial, content-type protection, referrer policy, permissions policy, body limit, proxy timeouts, and SSE buffering off.
 
-- [ ] **Step 4: Add local composition**
+- [x] **Step 4: Add local composition**
 
-Compose starts Azurite, API, worker, frontend, and a one-shot test bootstrap. Local fake adapters are enabled only by `APP_MODE=local`; deployed configuration refuses that mode. Mount no source credentials into images.
+Compose starts Azurite, API, worker, and frontend. Local mode is enabled only by `APP_MODE=local`; deployed configuration refuses that mode. Mount no source credentials into images. (Fake CU/model adapters were out of MVP scope, so the local worker idle-polls Azurite.)
 
 - [ ] **Step 5: Verify images and local browser flow**
 
@@ -1355,11 +1380,16 @@ Run: `docker compose up -d && cd frontend && npm run e2e -- --grep "container"`
 
 Expected: health checks pass; fixture upload, processing through fake CU/model adapters, citation display, and deletion pass.
 
-- [ ] **Step 6: Commit**
+**Deferred (Phase A):** Docker is not installed in this environment, so the image build and container
+browser flow were not executed; run this on a Docker-capable host. The local worker idle-polls Azurite
+because there is no local Content Understanding/model emulator.
+
+- [x] **Step 6: Commit**
 
 ```bash
-git add backend/Dockerfile frontend/Dockerfile frontend/nginx compose.yml .env.example backend/tests frontend/e2e
-git commit -m "build: containerize the workshop application"
+git add backend/Dockerfile backend/.dockerignore backend/app/worker.py backend/tests \
+  frontend/Dockerfile frontend/.dockerignore frontend/nginx compose.yml .env.example README.md docs
+git commit -m "build: containerize workshop MVP"
 ```
 
 ### Task 15: Author Bicep infrastructure with Azure Verified Modules

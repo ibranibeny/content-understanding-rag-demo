@@ -1,3 +1,15 @@
+name: content-understanding-workshop
+
+# Shared backend environment for the API and worker. APP_MODE=local routes storage,
+# queues, and tables to Azurite; Foundry/Search have no local emulator (see .env.example).
+x-backend-env: &backend-env
+  APP_MODE: local
+  AZURITE_TABLE_CONNECTION_STRING: "${AZURITE_TABLE_CONNECTION_STRING:-DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1}"
+  STORAGE_ACCOUNT_NAME: devstoreaccount1
+  SEARCH_ENDPOINT: "${SEARCH_ENDPOINT:-https://localhost}"
+  FOUNDRY_ENDPOINT: "${FOUNDRY_ENDPOINT:-https://demo.services.ai.azure.com}"
+  RELEASE_SHA: "${RELEASE_SHA:-local}"
+
 services:
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.35.0
@@ -14,6 +26,46 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+
+  api:
+    build:
+      context: ./backend
+    command: ["api"]
+    environment:
+      <<: *backend-env
+      FRONTEND_ORIGIN: "${FRONTEND_ORIGIN:-http://localhost:8080}"
+    depends_on:
+      azurite:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+    command: ["worker"]
+    environment:
+      <<: *backend-env
+    depends_on:
+      azurite:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      API_UPSTREAM: "${API_UPSTREAM:-http://api:8000}"
+      EXTRA_CONNECT_SRC: "${EXTRA_CONNECT_SRC:-http://127.0.0.1:10000 http://localhost:10000}"
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
 
 volumes:
   azurite-data:

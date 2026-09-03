@@ -1,0 +1,4 @@
+# Shell scripts and container build files must use LF so they run in Linux containers.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.template text eol=lf

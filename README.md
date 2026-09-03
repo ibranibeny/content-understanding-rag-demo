@@ -4,7 +4,9 @@ This repository contains a public workshop application for exploring document in
 
 ## Current status
 
-The repository currently provides the initial React frontend shell and FastAPI liveness endpoint. Document upload, extraction, search, grounded chat, deployment, and infrastructure are planned but are not implemented yet.
+The application is implemented: anonymous sessions, direct-to-Blob upload, Content Understanding
+extraction, chunking/embeddings, Azure AI Search retrieval, and grounded GPT-5 streaming chat, with a
+containerized local stack. Azure infrastructure (Bicep), CI/CD, and public deployment are in progress.
 
 ## Development
 
@@ -38,6 +40,22 @@ npm run lint
 npm run typecheck
 npm test -- --run
 npm run build
+```
+
+### Run the local stack with Docker
+
+The Compose stack runs the frontend (public NGINX), the FastAPI API, the queue worker, and Azurite
+for Blob/Queue/Table storage. Content Understanding, embeddings, and GPT-5 have no local emulator, so
+point `FOUNDRY_ENDPOINT` and `SEARCH_ENDPOINT` at real keyless Azure endpoints to exercise the full
+pipeline; otherwise the shell, health checks, and storage run locally.
+
+```text
+cp .env.example .env   # optional: override endpoints; contains no secrets
+docker compose build
+docker compose up -d
+# Frontend http://localhost:8080  |  API liveness http://localhost:8000/health/live
+docker compose run --rm api cleanup   # run the retention sweep on demand
+docker compose down
 ```
 
 Do not upload confidential, regulated, or production information to the workshop application.

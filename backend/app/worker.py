@@ -6,10 +6,13 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar, cast
 
+from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
+from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.queue.aio import QueueClient
 from pydantic import BaseModel
 
@@ -23,7 +26,12 @@ from app.domain.models import (
     OutboxRecord,
 )
 from app.repositories.table_repository import TableApplicationRepository
-from app.services.blob_service import AzureBlobStore, DocumentLeaseBusy, DocumentLeaseLost
+from app.services.blob_service import (
+    AzureBlobStore,
+    DocumentLeaseBusy,
+    DocumentLeaseLost,
+    LocalBlobSasSigner,
+)
 from app.services.content_understanding import ContentUnderstandingClient, ContentUnderstandingError
 from app.services.embeddings import EmbeddingError, FoundryEmbeddingClient
 from app.services.ingestion_service import IngestionService
@@ -221,6 +229,79 @@ class SystemClock:
         return datetime.now(UTC)
 
 
+AZURITE_DEVELOPMENT_ACCOUNT_KEY = (
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/"
+    "K1SZFPTOtr/KBHBeksoGMGw=="
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStorage:
+    ingestion_client: QueueClient
+    cleanup_client: QueueClient
+    poison_client: QueueClient
+    repository: TableApplicationRepository
+    blobs: AzureBlobStore
+
+
+def _azurite_account_key(connection_string: str) -> str:
+    if connection_string.strip().lower() == "usedevelopmentstorage=true":
+        return AZURITE_DEVELOPMENT_ACCOUNT_KEY
+    values = dict(part.split("=", 1) for part in connection_string.split(";") if "=" in part)
+    key = values.get("AccountKey")
+    if not key:
+        raise ValueError("Azurite connection string must provide an account key")
+    return key
+
+
+def build_worker_storage(
+    settings: Settings, clock: SystemClock, credential: DefaultAzureCredential
+) -> WorkerStorage:
+    """Build queue/table/blob clients; use Azurite shared-key auth outside production."""
+    connection_string = settings.azurite_table_connection_string
+    if settings.app_mode != "production" and connection_string:
+        ingestion_client = QueueClient.from_connection_string(
+            connection_string, settings.ingestion_queue
+        )
+        cleanup_client = QueueClient.from_connection_string(
+            connection_string, settings.content_result_cleanup_queue
+        )
+        poison_client = QueueClient.from_connection_string(
+            connection_string, settings.ingestion_poison_queue
+        )
+        table_client = TableClient.from_connection_string(connection_string, settings.table_name)
+        repository = TableApplicationRepository(cast(Any, table_client), owns_client=True)
+        blob_service = BlobServiceClient.from_connection_string(connection_string)
+        blobs = AzureBlobStore(
+            settings.storage_account_name,
+            settings.uploads_container,
+            clock,
+            derived_container=settings.derived_container,
+            control_container=settings.control_container,
+            service_client=cast(Any, blob_service),
+            sas_signer=LocalBlobSasSigner(_azurite_account_key(connection_string)),
+            own_service_client=True,
+        )
+        return WorkerStorage(ingestion_client, cleanup_client, poison_client, repository, blobs)
+
+    account_url = f"https://{settings.storage_account_name}.queue.core.windows.net"
+    ingestion_client = QueueClient(account_url, settings.ingestion_queue, credential=credential)
+    cleanup_client = QueueClient(
+        account_url, settings.content_result_cleanup_queue, credential=credential
+    )
+    poison_client = QueueClient(account_url, settings.ingestion_poison_queue, credential=credential)
+    repository = TableApplicationRepository.from_settings(settings, credential=credential)
+    blobs = AzureBlobStore(
+        settings.storage_account_name,
+        settings.uploads_container,
+        clock,
+        derived_container=settings.derived_container,
+        control_container=settings.control_container,
+        credential=credential,
+    )
+    return WorkerStorage(ingestion_client, cleanup_client, poison_client, repository, blobs)
+
+
 async def _receive_loop(client: Any, pump: QueuePump[Any], stop: asyncio.Event,
                         semaphore: asyncio.Semaphore) -> None:
     active: set[asyncio.Task[None]] = set()
@@ -257,14 +338,12 @@ async def _main(stop: asyncio.Event | None = None) -> None:
     clock = SystemClock()
     stop_event = stop or asyncio.Event()
     credential = DefaultAzureCredential()
-    account_url = f"https://{settings.storage_account_name}.queue.core.windows.net"
-    ingestion_client = QueueClient(account_url, settings.ingestion_queue, credential=credential)
-    cleanup_client = QueueClient(account_url, settings.content_result_cleanup_queue, credential=credential)
-    poison_client = QueueClient(account_url, settings.ingestion_poison_queue, credential=credential)
-    repository = TableApplicationRepository.from_settings(settings, credential=credential)
-    blobs = AzureBlobStore(settings.storage_account_name, settings.uploads_container, clock,
-                           derived_container=settings.derived_container,
-                           control_container=settings.control_container, credential=credential)
+    storage = build_worker_storage(settings, clock, credential)
+    ingestion_client = storage.ingestion_client
+    cleanup_client = storage.cleanup_client
+    poison_client = storage.poison_client
+    repository = storage.repository
+    blobs = storage.blobs
     content = ContentUnderstandingClient(settings.foundry_endpoint, credential=credential)
     embeddings = FoundryEmbeddingClient(settings.foundry_endpoint,
                                          deployment=settings.embedding_deployment,
