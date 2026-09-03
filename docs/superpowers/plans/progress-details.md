@@ -73,3 +73,20 @@
 - TDD green and final verification: focused configuration/readiness tests `91 passed`; Ruff
 	passed; strict mypy reported no issues in 17 source files; full backend suite `197 passed`;
 	`git diff --check` passed; editor diagnostics reported no errors in modified Python files.
+
+## 2026-09-03 — Task 2 ambiguous endpoint-authority remediation
+
+- Scope: closed the remaining raw Unicode format-control and numeric dotted-authority bypasses
+	without changing valid HTTPS endpoint normalization or using the network.
+- Root cause: the raw-input screen checked whitespace, backslashes, and only C0 controls, allowing
+	IDNA to erase `Cf` characters; failed `ipaddress` parses unconditionally fell through to DNS
+	normalization, allowing malformed IPv4-looking authorities as DNS names.
+- TDD red: the focused configuration suite produced the expected `18 failed, 85 passed` for
+	U+200B, U+200D, and U+FEFF mutations at URL boundaries and inside hosts/paths, plus malformed
+	numeric dotted authorities.
+- Implementation: reject every raw character in Unicode category `Cc` or `Cf` before scheme
+	parsing, and reject ASCII digit/dot-only hostnames when strict IP parsing fails. Alphanumeric and
+	hyphenated DNS labels remain accepted and normalized by the existing DNS path.
+- TDD green and final verification: focused configuration tests `103 passed`; Ruff passed; strict
+	mypy reported no issues in 11 source files; full backend suite `222 passed`; `git diff --check`
+	passed; editor diagnostics reported no errors in the modified Python files.

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import Settings, validate_https_endpoint
 
 
 def test_settings_defaults_lock_required_models_and_limits() -> None:
@@ -108,6 +108,39 @@ def test_settings_reject_invalid_azure_service_endpoints(field: str, value: str)
         Settings.model_validate({field: value})
 
 
+@pytest.mark.parametrize("character", ["\u200b", "\u200d", "\ufeff"])
+@pytest.mark.parametrize(
+    "endpoint_template",
+    [
+        "{}https://example.com",
+        "https://exa{}mple.com",
+        "https://example.com/{}",
+        "https://example.com{}",
+    ],
+)
+def test_endpoint_rejects_format_characters_before_parsing(
+    character: str, endpoint_template: str
+) -> None:
+    with pytest.raises(ValueError, match="unsafe character"):
+        validate_https_endpoint(endpoint_template.format(character))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://127.0.0.01",
+        "https://999.999.999.999",
+        "https://1.2.3",
+        "https://.127.0.0.1",
+        "https://127.0.0.1.",
+    ],
+)
+@pytest.mark.parametrize("field", ["foundry_endpoint", "search_endpoint"])
+def test_settings_reject_ambiguous_numeric_ipv4_authorities(field: str, value: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({field: value})
+
+
 @pytest.mark.parametrize("field", ["foundry_endpoint", "search_endpoint"])
 def test_settings_normalize_azure_service_endpoint_trailing_slash(field: str) -> None:
     settings = Settings.model_validate({field: "https://example.services.ai.azure.com/"})
@@ -122,6 +155,9 @@ def test_settings_normalize_azure_service_endpoint_trailing_slash(field: str) ->
         ("https://127.0.0.1/", "https://127.0.0.1"),
         ("https://[2001:db8::1]:8443/", "https://[2001:db8::1]:8443"),
         ("https://b\u00fccher.example/", "https://xn--bcher-kva.example"),
+        ("https://123.example/", "https://123.example"),
+        ("https://node-123.example/", "https://node-123.example"),
+        ("https://123node.example/", "https://123node.example"),
     ],
 )
 def test_settings_accept_valid_dns_and_ip_endpoint_authorities(

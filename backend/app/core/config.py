@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import unicodedata
 from typing import Annotated, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -39,10 +40,16 @@ def validate_https_endpoint(value: object) -> str:
     """Validate and normalize a root HTTPS service endpoint."""
     if not isinstance(value, str) or not value:
         raise ValueError("service endpoint must be a nonempty string")
+    if any(
+        character == "\\"
+        or character.isspace()
+        or ord(character) < 32
+        or unicodedata.category(character) in {"Cc", "Cf"}
+        for character in value
+    ):
+        raise ValueError("service endpoint contains an unsafe character")
     if not value.startswith("https://"):
         raise ValueError("service endpoint must use the exact https scheme")
-    if any(character == "\\" or character.isspace() or ord(character) < 32 for character in value):
-        raise ValueError("service endpoint contains an unsafe character")
 
     try:
         endpoint = urlsplit(value)
@@ -67,6 +74,8 @@ def validate_https_endpoint(value: object) -> str:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
+        if re.fullmatch(r"[0-9.]+", hostname):
+            raise ValueError("service endpoint hostname is not a valid IPv4 address")
         normalized_host = _normalize_dns_hostname(hostname)
     else:
         normalized_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
