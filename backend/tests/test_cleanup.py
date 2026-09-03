@@ -122,3 +122,10 @@ async def test_cleanup_main_closes_dependencies_when_processing_fails(
     monkeypatch.setattr("app.cleanup.run_cleanup_once", fail)
     assert await async_main(dependency_factory=lambda settings: Bundle()) == 1  # type: ignore[arg-type]
     assert closed == 1
+
+
+async def test_cleanup_without_injected_production_search_fails_closed(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert await async_main() == 1
+    assert "ChunkSearch is not configured" in capsys.readouterr().out

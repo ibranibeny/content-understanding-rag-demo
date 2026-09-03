@@ -1,12 +1,12 @@
 import asyncio
 import os
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import Protocol, cast
-from uuid import UUID
+from typing import Any, Protocol, cast
 
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import ResourceExistsError
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
@@ -26,7 +26,6 @@ from app.core.errors import (
     request_validation_error_handler,
 )
 from app.core.readiness import ReadinessRegistry
-from app.domain.models import DocumentChunk, RetrievedEvidence
 from app.domain.protocols import (
     BlobStore,
     ChunkSearch,
@@ -40,11 +39,12 @@ from app.domain.protocols import (
 )
 from app.repositories.memory_repository import (
     MemoryApplicationRepository,
+    MemoryChunkSearch,
     MemorySessionRepository,
     MemoryWorkQueue,
 )
 from app.repositories.table_repository import TableApplicationRepository, TableClientLike
-from app.services.blob_service import AzureBlobStore, BlobServiceClientLike
+from app.services.blob_service import AzureBlobStore, BlobServiceClientLike, LocalBlobSasSigner
 from app.services.deletion_service import DeletionService
 from app.services.document_service import DocumentService
 from app.services.outbox_service import OutboxDispatcher
@@ -53,6 +53,10 @@ from app.services.session_service import SessionService, SystemClock
 from app.services.upload_service import UploadService
 
 PRODUCTION_READINESS_CHECKS = frozenset({"blob", "queue", "table", "search", "foundry"})
+AZURITE_DEVELOPMENT_ACCOUNT_KEY = (
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/"
+    "K1SZFPTOtr/KBHBeksoGMGw=="
+)
 
 
 async def _ready() -> bool:
@@ -120,12 +124,32 @@ class ProductionDependencies(ApplicationDependencies):
 class LocalDependencies(ApplicationDependencies):
     application_repository: CloseableApplicationRepository
     work_queue: CloseableApplicationWorkQueue
+    table_client: TableClientLike
+    blob_service_client: BlobServiceClientLike
+    queue_clients: tuple[QueueClientLike, ...]
+    local_container_names: tuple[str, ...]
+
+    async def ensure_local_data_plane(self) -> None:
+        async def create(operation: Callable[[], object]) -> None:
+            try:
+                await cast(Any, operation())
+            except ResourceExistsError:
+                pass
+
+        await create(self.table_client.create_table)  # type: ignore[attr-defined]
+        for name in self.local_container_names:
+            container = self.blob_service_client.get_container_client(name)
+            await create(container.create_container)  # type: ignore[attr-defined]
+        for queue in self.queue_clients:
+            await create(queue.create_queue)  # type: ignore[attr-defined]
 
     async def aclose(self) -> None:
+        extra_queues = self.queue_clients[2:]
         results = await asyncio.gather(
             self.application_repository.aclose(),
             self.work_queue.aclose(),
             self.blob_store.aclose(),
+            *(queue.close() for queue in extra_queues),
             return_exceptions=True,
         )
         for result in results:
@@ -135,7 +159,7 @@ class LocalDependencies(ApplicationDependencies):
 
 def create_production_dependencies(
     settings: Settings,
-    chunk_search: ChunkSearch | None = None,
+    chunk_search: ChunkSearch,
     readiness_checks: Mapping[str, ReadinessCheck] | None = None,
     *,
     credential: AsyncTokenCredential | None = None,
@@ -182,34 +206,12 @@ def create_production_dependencies(
         application_repository=repository,
         work_queue=queue,
         blob_store=blobs,
-        chunk_search=chunk_search or _EmptyChunkSearch(),
+        chunk_search=chunk_search,
         readiness_checks=readiness_checks or {
             name: _not_ready for name in PRODUCTION_READINESS_CHECKS
         },
         credential=actual_credential,
     )
-
-
-class _EmptyChunkSearch:
-    async def delete_for_document(self, session_key: str, document_id: UUID) -> None:
-        del session_key, document_id
-
-    async def has_for_document(self, session_key: str, document_id: UUID) -> bool:
-        del session_key, document_id
-        return False
-
-    async def upsert(self, chunks: Sequence[DocumentChunk]) -> None:
-        del chunks
-
-    async def search(
-        self,
-        session_key: str,
-        query: str,
-        vector: Sequence[float],
-        document_ids: Sequence[UUID],
-    ) -> list[RetrievedEvidence]:
-        del session_key, query, vector, document_ids
-        return []
 
 
 def create_local_dependencies(
@@ -230,6 +232,29 @@ def create_local_dependencies(
     cleanup = QueueClient.from_connection_string(
         connection_string, settings.content_result_cleanup_queue
     )
+    queue_clients: list[QueueClientLike] = [
+        cast(QueueClientLike, ingestion),
+        cast(QueueClientLike, cleanup),
+    ]
+    if settings.ingestion_poison_queue:
+        poison = QueueClient.from_connection_string(
+            connection_string, settings.ingestion_poison_queue
+        )
+        queue_clients.append(cast(QueueClientLike, poison))
+    if connection_string.strip().lower() == "usedevelopmentstorage=true":
+        account_key = AZURITE_DEVELOPMENT_ACCOUNT_KEY
+    else:
+        values = dict(
+            part.split("=", 1)
+            for part in connection_string.split(";")
+            if "=" in part
+        )
+        configured_account_key = values.get("AccountKey")
+        if configured_account_key is None:
+            raise ValueError("Azurite connection string must provide an account key")
+        account_key = configured_account_key
+    if not account_key:
+        raise ValueError("Azurite connection string must provide an account key")
     repository = TableApplicationRepository(
         cast(TableClientLike, table_client), owns_client=True
     )
@@ -245,14 +270,23 @@ def create_local_dependencies(
         derived_container=settings.derived_container,
         control_container=settings.control_container,
         service_client=cast(BlobServiceClientLike, blob_client),
+        sas_signer=LocalBlobSasSigner(account_key),
         own_service_client=True,
     )
     return LocalDependencies(
         application_repository=repository,
         work_queue=queue,
         blob_store=blobs,
-        chunk_search=chunk_search or _EmptyChunkSearch(),
+        chunk_search=chunk_search or MemoryChunkSearch(),
         readiness_checks={"configuration": _ready},
+        table_client=cast(TableClientLike, table_client),
+        blob_service_client=cast(BlobServiceClientLike, blob_client),
+        queue_clients=tuple(queue_clients),
+        local_container_names=(
+            settings.uploads_container,
+            settings.derived_container,
+            settings.control_container,
+        ),
     )
 
 
@@ -353,7 +387,7 @@ def create_app(
         actual_deletion_service = DeletionService(
             documents,
             actual_upload_service.blobs,  # type: ignore[arg-type]
-            dependencies.chunk_search if dependencies is not None else _EmptyChunkSearch(),
+            dependencies.chunk_search if dependencies is not None else MemoryChunkSearch(),
         )
         actual_document_service = DocumentService(
             documents, actual_deletion_service, actual_dispatcher, clock
@@ -375,9 +409,11 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         task: asyncio.Task[None] | None = None
-        if dispatcher_enabled:
-            task = asyncio.create_task(actual_dispatcher.run())
         try:
+            if isinstance(dependencies, LocalDependencies):
+                await dependencies.ensure_local_data_plane()
+            if dispatcher_enabled:
+                task = asyncio.create_task(actual_dispatcher.run())
             yield
         finally:
             if task is not None:
@@ -429,11 +465,15 @@ def create_app(
     return app
 
 
-def create_production_app() -> FastAPI:
+def create_production_app(chunk_search: ChunkSearch | None = None) -> FastAPI:
     settings = Settings()
     if settings.app_mode != "production":
         raise ValueError("production app factory requires APP_MODE=production")
-    dependencies = create_production_dependencies(settings)
+    if chunk_search is None:
+        raise RuntimeError(
+            "ChunkSearch is not configured; Task 7 must wire the Azure AI Search adapter"
+        )
+    dependencies = create_production_dependencies(settings, chunk_search)
     try:
         return create_app(settings=settings, dependencies=dependencies)
     except BaseException:

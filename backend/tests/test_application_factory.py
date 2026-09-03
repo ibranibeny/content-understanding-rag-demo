@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from inspect import signature
 from typing import Any
 from uuid import UUID
 
@@ -92,6 +93,35 @@ def production_settings() -> Settings:
 def test_production_rejects_omitted_dependency_bundle_instead_of_using_memory() -> None:
     with pytest.raises(ValueError, match="production requires explicit ApplicationDependencies"):
         create_app(settings=production_settings())
+
+
+def test_production_dependency_factory_requires_explicit_chunk_search() -> None:
+    with pytest.raises(TypeError, match="chunk_search"):
+        create_production_dependencies(production_settings())  # type: ignore[call-arg]
+    parameters = signature(create_production_dependencies).parameters
+    assert "account_key" not in parameters
+    assert "sas_signer" not in parameters
+
+
+def test_production_app_fails_clearly_until_search_adapter_is_wired() -> None:
+    import os
+
+    previous_mode = os.environ.get("APP_MODE")
+    previous_origin = os.environ.get("FRONTEND_ORIGIN")
+    os.environ["APP_MODE"] = "production"
+    os.environ["FRONTEND_ORIGIN"] = "https://frontend.example.com"
+    with pytest.raises(RuntimeError, match="ChunkSearch.*not configured"):
+        try:
+            create_production_app()
+        finally:
+            if previous_mode is None:
+                os.environ.pop("APP_MODE", None)
+            else:
+                os.environ["APP_MODE"] = previous_mode
+            if previous_origin is None:
+                os.environ.pop("FRONTEND_ORIGIN", None)
+            else:
+                os.environ["FRONTEND_ORIGIN"] = previous_origin
 
 
 def test_production_wires_one_explicit_dependency_bundle_without_memory_defaults() -> None:
@@ -224,9 +254,11 @@ def test_production_factory_loads_settings_builds_dependencies_and_closes_once(
     )
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("FRONTEND_ORIGIN", "https://frontend.example.com")
-    monkeypatch.setattr("app.main.create_production_dependencies", lambda settings: dependencies)
+    monkeypatch.setattr(
+        "app.main.create_production_dependencies", lambda settings, search: dependencies
+    )
 
-    app = create_production_app()
+    app = create_production_app(Search())
     assert app.state.document_repository is repository.documents
     with TestClient(app):
         pass
@@ -251,14 +283,16 @@ def test_production_factory_closes_dependencies_once_when_app_construction_fails
     )
     monkeypatch.setenv("APP_MODE", "production")
     monkeypatch.setenv("FRONTEND_ORIGIN", "https://frontend.example.com")
-    monkeypatch.setattr("app.main.create_production_dependencies", lambda settings: dependencies)
+    monkeypatch.setattr(
+        "app.main.create_production_dependencies", lambda settings, search: dependencies
+    )
     monkeypatch.setattr(
         "app.main.create_app",
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("construction failed")),
     )
 
     with pytest.raises(RuntimeError, match="construction failed"):
-        create_production_app()
+        create_production_app(Search())
     assert credential.close_calls == 1
     assert blobs.closed == 1
 

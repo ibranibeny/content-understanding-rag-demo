@@ -97,6 +97,21 @@ class BlobServiceClientLike(Protocol):
     def get_container_client(self, container: str) -> ContainerClientLike: ...
 
 
+class BlobSasSigner(Protocol):
+    async def sign(
+        self,
+        service_client: BlobServiceClientLike,
+        sas_factory: "SasFactory",
+        *,
+        account_name: str,
+        container_name: str,
+        blob_name: str,
+        permission: BlobSasPermissions,
+        start: datetime,
+        expiry: datetime,
+    ) -> str: ...
+
+
 UploadGrant = BlobUploadGrant
 VerifiedUpload = VerifiedBlobUpload
 
@@ -106,6 +121,65 @@ SpoolFactory = Callable[..., Any]
 LeaseFactory = Callable[[BlobClientLike], LeaseClientLike]
 Sleep = Callable[[float], object]
 Random = Callable[[], float]
+
+
+class UserDelegationBlobSasSigner:
+    async def sign(
+        self,
+        service_client: BlobServiceClientLike,
+        sas_factory: SasFactory,
+        *,
+        account_name: str,
+        container_name: str,
+        blob_name: str,
+        permission: BlobSasPermissions,
+        start: datetime,
+        expiry: datetime,
+    ) -> str:
+        key = await service_client.get_user_delegation_key(start, expiry)
+        return sas_factory(
+            account_name=account_name,
+            container_name=container_name,
+            blob_name=blob_name,
+            user_delegation_key=key,
+            permission=permission,
+            start=start,
+            expiry=expiry,
+            protocol="https",
+        )
+
+
+class LocalBlobSasSigner:
+    """Azurite-only account-key signer; the key is never represented or exposed."""
+
+    def __init__(self, account_key: str) -> None:
+        if not account_key:
+            raise ValueError("local storage account key is required")
+        self._account_key = account_key
+
+    async def sign(
+        self,
+        service_client: BlobServiceClientLike,
+        sas_factory: SasFactory,
+        *,
+        account_name: str,
+        container_name: str,
+        blob_name: str,
+        permission: BlobSasPermissions,
+        start: datetime,
+        expiry: datetime,
+    ) -> str:
+        del service_client
+        return sas_factory(
+            account_name=account_name,
+            container_name=container_name,
+            blob_name=blob_name,
+            account_key=self._account_key,
+            permission=permission,
+            start=start,
+            expiry=expiry,
+            protocol="https,http",
+        )
 
 
 def _azure_lease_factory(blob: BlobClientLike) -> LeaseClientLike:
@@ -126,6 +200,7 @@ class AzureBlobStore:
         credential: AsyncTokenCredential | None = None,
         service_client: BlobServiceClientLike | None = None,
         sas_factory: SasFactory = generate_blob_sas,
+        sas_signer: BlobSasSigner | None = None,
         spool_factory: SpoolFactory = SpooledTemporaryFile,
         office_concurrency: int = 2,
         lease_factory: LeaseFactory = _azure_lease_factory,
@@ -146,6 +221,7 @@ class AzureBlobStore:
         self._credential = credential
         self._service_client = service_client
         self._sas_factory = sas_factory
+        self._sas_signer = sas_signer or UserDelegationBlobSasSigner()
         self._spool_factory = spool_factory
         self._office_semaphore = asyncio.Semaphore(office_concurrency)
         self._lease_factory = lease_factory
@@ -179,17 +255,16 @@ class AzureBlobStore:
         start = now - SAS_CLOCK_SKEW
         expiry = now + SAS_LIFETIME
         client = self._client()
-        key = await client.get_user_delegation_key(start, expiry)
         permission = BlobSasPermissions(create=True, write=True)
-        sas = self._sas_factory(
+        sas = await self._sas_signer.sign(
+            client,
+            self._sas_factory,
             account_name=self._account_name,
             container_name=self._uploads_container,
             blob_name=blob_name,
-            user_delegation_key=key,
             permission=permission,
             start=start,
             expiry=expiry,
-            protocol="https",
         )
         blob = client.get_blob_client(self._uploads_container, blob_name)
         return UploadGrant(

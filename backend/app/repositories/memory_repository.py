@@ -1,14 +1,17 @@
 import asyncio
+from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID
 
 from app.core.errors import ConcurrencyConflict
 from app.domain.models import (
     ContentResultCleanupMessage,
+    DocumentChunk,
     DocumentRecord,
     DocumentState,
     IngestionMessage,
     OutboxRecord,
+    RetrievedEvidence,
     SessionRecord,
     VersionedDocument,
 )
@@ -272,3 +275,30 @@ class MemoryWorkQueue:
 
     async def get_ingestion_backlog(self) -> int:
         return len(self.ingestion_messages)
+
+
+class MemoryChunkSearch:
+    """Explicit local/test search fake that tracks indexed document artifacts."""
+
+    def __init__(self) -> None:
+        self._chunks: dict[tuple[str, UUID], list[DocumentChunk]] = {}
+
+    async def delete_for_document(self, session_key: str, document_id: UUID) -> None:
+        self._chunks.pop((session_key, document_id), None)
+
+    async def has_for_document(self, session_key: str, document_id: UUID) -> bool:
+        return bool(self._chunks.get((session_key, document_id)))
+
+    async def upsert(self, chunks: Sequence[DocumentChunk]) -> None:
+        for chunk in chunks:
+            self._chunks.setdefault((chunk.session_key, chunk.document_id), []).append(chunk)
+
+    async def search(
+        self,
+        session_key: str,
+        query: str,
+        vector: Sequence[float],
+        document_ids: Sequence[UUID],
+    ) -> list[RetrievedEvidence]:
+        del session_key, query, vector, document_ids
+        return []

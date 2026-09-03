@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.core.config import Settings
+from app.domain.protocols import ChunkSearch
 from app.main import ApplicationDependencies, ProductionDependencies, create_production_dependencies
 from app.services.deletion_service import DeletionService
 
@@ -38,8 +39,14 @@ async def run_cleanup_once(
     )
 
 
-def _production_dependencies(settings: Settings) -> ProductionDependencies:
-    dependencies = create_production_dependencies(settings)
+def _production_dependencies(
+    settings: Settings, chunk_search: ChunkSearch | None = None
+) -> ProductionDependencies:
+    if chunk_search is None:
+        raise RuntimeError(
+            "ChunkSearch is not configured; inject the Task 7 Azure AI Search adapter"
+        )
+    dependencies = create_production_dependencies(settings, chunk_search)
     if not isinstance(dependencies, ProductionDependencies):
         raise TypeError("production dependency factory returned an invalid bundle")
     return dependencies
@@ -71,8 +78,8 @@ async def async_main(
             f"skipped={totals.skipped} purged={totals.purged}"
         )
         return 0
-    except Exception:  # noqa: BLE001 - command boundary maps systemic failures to exit status
-        print("cleanup failed")
+    except Exception as exc:  # noqa: BLE001 - command boundary maps systemic failures to exit status
+        print(f"cleanup failed: {type(exc).__name__}: {exc}")
         return 1
     finally:
         if dependencies is not None:

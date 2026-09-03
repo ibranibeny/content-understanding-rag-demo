@@ -14,7 +14,12 @@ from azure.core.exceptions import (
 )
 
 from app.core.errors import AppError
-from app.services.blob_service import AzureBlobStore, DocumentLeaseBusy, DocumentLeaseLost
+from app.services.blob_service import (
+    AzureBlobStore,
+    DocumentLeaseBusy,
+    DocumentLeaseLost,
+    LocalBlobSasSigner,
+)
 
 NOW = datetime(2026, 9, 3, 10, 0, tzinfo=UTC)
 
@@ -140,6 +145,41 @@ async def test_sas_is_https_one_blob_write_create_only_and_short_lived() -> None
     assert grant.expires_at == NOW + timedelta(minutes=15)
     assert grant.required_headers == {"x-ms-blob-type": "BlockBlob"}
     assert "secret" not in repr(store)
+
+
+async def test_local_account_key_sas_never_requests_user_delegation_key() -> None:
+    captured: dict[str, Any] = {}
+
+    def sas_factory(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "sp=cw&spr=https%2Chttp&sig=local"
+
+    class LocalBlob(BlobClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.url = "http://127.0.0.1:10000/devstoreaccount1/uploads/path/file.pdf"
+
+    class LocalService(BlobService):
+        async def get_user_delegation_key(self, start: datetime, expiry: datetime) -> object:
+            del start, expiry
+            raise AssertionError("Azurite must not request user delegation")
+
+    store = AzureBlobStore(
+        "devstoreaccount1",
+        "uploads",
+        Clock(),
+        service_client=LocalService(LocalBlob()),
+        sas_factory=sas_factory,
+        sas_signer=LocalBlobSasSigner("local-account-key"),
+    )
+
+    grant = await store.create_upload("path/file.pdf", "application/pdf")
+
+    assert captured["account_key"] == "local-account-key"
+    assert "user_delegation_key" not in captured
+    assert captured["protocol"] == "https,http"
+    assert grant.upload_url.startswith("http://127.0.0.1:10000/")
+    assert "local-account-key" not in repr(store)
 
 
 async def test_verify_reads_bounded_header_for_non_office_blob() -> None:

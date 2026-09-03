@@ -211,3 +211,26 @@
 	94 and checked 93 packages; editor diagnostics and `git diff --check` were clean. Docker was not
 	installed, so compose runtime/config validation was skipped under the permitted availability
 	condition.
+
+## 2026-09-03 — Task 5 final fail-closed durable dependency remediation
+
+- Root causes: production and cleanup factories silently substituted `_EmptyChunkSearch`; local
+	startup constructed Azurite clients without provisioning the Table, containers, or queues; and
+	`AzureBlobStore.create_upload()` always requested a user-delegation key unsupported by Azurite.
+- TDD red: focused compliance collection failed for missing `MemoryChunkSearch` and
+	`LocalBlobSasSigner`; after the initial implementation, behavior tests reported six expected
+	failures, then two resource-ownership failures for the separately provisioned poison queue.
+- Implementation: production dependency creation now requires an explicit `ChunkSearch`, and the
+	production app and cleanup entry points fail clearly until Task 7 injects one. Local/test uses an
+	explicit artifact-tracking `MemoryChunkSearch`; no no-op Search remains in production code.
+- Local durability: the Azurite lifespan idempotently creates the configured Table, uploads,
+	derived, and control containers, ingestion and result-cleanup queues, plus the configured poison
+	queue before readiness/use. Already-exists is accepted; any other startup failure closes every
+	owned client and propagates.
+- SAS isolation: production retains HTTPS-only user-delegation SAS. Only the nonproduction local
+	factory parses the standard Azurite account key and injects `LocalBlobSasSigner`, which emits a
+	one-blob `https,http` create/write SAS for the local HTTP endpoint and never requests delegation.
+	The production factory accepts no account-key or local-signer parameter.
+- Green evidence: focused compliance tests `46 passed`; offline sync resolved 94 and checked 93
+	cached packages; Ruff passed; strict mypy reported no issues in 28 source files; full backend
+	pytest passed `556 tests`; editor diagnostics and `git diff --check` were clean.
