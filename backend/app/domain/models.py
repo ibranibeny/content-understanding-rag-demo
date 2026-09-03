@@ -105,6 +105,7 @@ class DocumentRecord(ContractModel):
     failure_code: str | None = None
     failure_retryable: bool = False
     retry_count: int = Field(default=0, ge=0)
+    processing_metadata: dict[str, JsonValue] = Field(default_factory=dict)
     tombstoned_at: UtcDateTime | None = None
     deletion_requested_at: UtcDateTime | None = None
     deleted_at: UtcDateTime | None = None

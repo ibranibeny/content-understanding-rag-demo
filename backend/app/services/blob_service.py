@@ -80,7 +80,7 @@ class BlobClientLike(Protocol):
         self, offset: int | None = None, length: int | None = None, **kwargs: Any
     ) -> Download: ...
 
-    async def upload_blob(self, data: bytes, *, overwrite: bool) -> object: ...
+    async def upload_blob(self, data: bytes, *, overwrite: bool, **kwargs: Any) -> object: ...
 
     async def delete_blob(self, **kwargs: Any) -> object: ...
 
@@ -356,6 +356,23 @@ class AzureBlobStore:
         download = await self._client().get_blob_client(
             self._uploads_container, blob_name
         ).download_blob(offset=0, length=length)
+        return await download.readall()
+
+    async def write_derived(self, blob_name: str, data: bytes, content_type: str) -> None:
+        from azure.storage.blob import ContentSettings
+
+        await self._client().get_blob_client(
+            self._derived_container, blob_name
+        ).upload_blob(
+            data,
+            overwrite=True,
+            content_settings=ContentSettings(content_type=content_type),
+        )
+
+    async def read_derived(self, blob_name: str) -> bytes:
+        download = await self._client().get_blob_client(
+            self._derived_container, blob_name
+        ).download_blob()
         return await download.readall()
 
     async def delete(self, blob_name: str) -> None:

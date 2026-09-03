@@ -176,6 +176,14 @@ class MemoryDocumentRepository:
             self._outbox[outbox.outbox_id] = (outbox, 1)
             return VersionedDocument(value=document, etag=self._etag(version))
 
+    async def commit_document_with_outbox(
+        self,
+        document: DocumentRecord,
+        document_etag: str,
+        outbox: OutboxRecord,
+    ) -> VersionedDocument:
+        return await self.commit_queued_with_outbox(document, document_etag, outbox)
+
     async def list_pending_outbox(self, limit: int) -> list[tuple[OutboxRecord, str]]:
         pending = [
             (record, self._etag(version))

@@ -367,6 +367,11 @@ class TableDocumentRepository:
             raise ConcurrencyConflict from None
         return VersionedDocument(value=document, etag=_etag(responses[0]))
 
+    async def commit_document_with_outbox(
+        self, document: DocumentRecord, document_etag: str, outbox: OutboxRecord
+    ) -> VersionedDocument:
+        return await self.commit_queued_with_outbox(document, document_etag, outbox)
+
     async def list_pending_outbox(self, limit: int) -> list[tuple[OutboxRecord, str]]:
         pager = self._client.query_entities(
             "RowKey ge @start and RowKey lt @end and Sent eq @pending",
