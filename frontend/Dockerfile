@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Multi-stage: build the Vite bundle with Node, serve it with unprivileged NGINX.
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NODE_IMAGE=node:24-bookworm-slim
 ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.27-alpine
 
 FROM ${NODE_IMAGE} AS build

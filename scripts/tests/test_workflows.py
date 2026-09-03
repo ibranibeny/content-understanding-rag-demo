@@ -69,6 +69,13 @@ def test_ci_runs_the_workflow_policy_tests() -> None:
     assert "scripts/tests" in text, "CI must run the scripts/tests policy suite"
 
 
+def test_ci_uses_frontend_supported_node_runtime() -> None:
+    text = _read("ci.yml")
+    assert re.search(r"(?m)^\s*node-version:\s*['\"]?24['\"]?\s*$", text), (
+        "frontend test dependencies require Node 24"
+    )
+
+
 # --- CodeQL -------------------------------------------------------------------
 def test_codeql_runs_on_pull_request_and_main() -> None:
     text = _read("codeql.yml")
