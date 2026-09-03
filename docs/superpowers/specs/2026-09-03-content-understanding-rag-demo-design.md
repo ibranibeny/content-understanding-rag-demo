@@ -238,7 +238,8 @@ This is capability-based isolation suitable for a workshop. It is not an authori
 5. The browser uploads directly to Blob Storage and reports progress.
 6. The browser calls `POST /api/uploads/{documentId}/complete` with the resulting ETag.
 7. The API verifies blob existence, ETag, content length, content type, and leading file signature bytes.
-8. An optimistic-concurrency update changes the state to `queued` exactly once and sends a versioned queue message.
+8. One same-partition Table transaction changes the state to `queued` and creates a deterministic outbox row.
+9. The API immediately attempts delivery; a five-second API background dispatcher retries pending outbox rows. A crash before send leaves pending work, while a crash after send can create a harmless duplicate handled by the idempotent worker.
 
 Blob path format:
 
@@ -255,9 +256,12 @@ Queue messages contain only:
   "documentId": "uuid",
   "blobName": "generated/path",
   "correlationId": "uuid",
-  "enqueuedAt": "RFC3339 timestamp"
+  "enqueuedAt": "RFC3339 timestamp",
+  "resumeStage": "analyzing"
 }
 ```
+
+`resumeStage` is either `analyzing` or `chunking`. The Content Understanding result-cleanup consumer emits `chunking` only after remote result deletion is confirmed.
 
 ## 10. Content Understanding and indexing flow
 
@@ -562,14 +566,14 @@ The canonical entry points are `scripts/deploy.ps1` on Windows and `scripts/depl
 2. Run `azd provision`, which deploys resource-group-scoped Bicep into the one application resource group. On first provision, Container Apps reference a public Microsoft hello-world bootstrap image, so no nonexistent application image is required.
 3. Run the idempotent data-plane bootstrap: configure Content Understanding defaults, create or replace the four analyzers and router, create the AI Search index, and prove token-only analyze/result-delete, embedding, and `gpt-5` calls.
 4. Build and push exactly two SHA-tagged images unless immutable image digests were supplied by CI. Resolve and record both ACR digests.
-5. Record the active frontend/API revisions and worker/cleanup digests. Create a backend API candidate revision from the new backend digest and give it an immutable internal release label derived from the commit SHA.
+5. Record the active frontend/API revisions and assert that API, worker, and cleanup share one backend digest. Abort with repair guidance if drift exists. Create a backend API candidate revision from the new backend digest and give it an immutable internal release label derived from the commit SHA.
 6. Create a frontend candidate revision from the new frontend digest, configure its NGINX upstream to the immutable API release-label URL, and assign the public frontend `candidate` label.
 7. Drain the main ingestion queue with a bounded timeout, temporarily pause worker scaling, update the worker to the new backend digest, and restore queue scaling. This ensures the candidate smoke test exercises the candidate ingestion implementation.
 8. Run the end-to-end smoke test against the public candidate frontend URL. It exercises upload, candidate API, candidate worker, Content Understanding, indexing, RAG, citation validation, and immediate logical deletion.
 9. Update the cleanup job to the tested backend digest, shift 100% production traffic to the candidate frontend and API revisions, remove only the frontend `candidate` label, and record release metadata. Retain API release labels for the current and immediately previous releases; remove older labels and revisions only when no retained frontend references them.
-10. On failure at any point after candidate creation, deactivate candidate frontend/API revisions, restore the previous worker and cleanup digests if changed, restore queue scaling, and retain or restore 100% traffic on the previous production revisions.
+10. On failure at any point after candidate creation, deactivate candidate frontend/API revisions, restore API, worker, and cleanup to the one previous backend digest, restore queue scaling, and retain or restore 100% traffic on the previous production revisions.
 
-Before every `azd provision`, the deployment script reads existing Container App image digests and supplies them as Bicep parameters. A first deployment uses bootstrap images; subsequent infrastructure reconciliation preserves the currently released immutable digests and never reapplies bootstrap images. Local deployment builds with ACR Tasks by default. In GitHub Actions, CI builds and pushes both immutable SHA-tagged images exactly once, then supplies their digests to the same deployment script; the deployment phase never rebuilds them. Bicep prefers Azure Verified Modules when a suitable module exists. Deployment never substitutes a different model automatically; missing `gpt-5` capacity produces actionable quota guidance.
+Before every `azd provision`, the deployment script reads the frontend image and verifies that API, worker, and cleanup use the same backend digest, then supplies exactly those two digests as Bicep parameters. A first deployment uses bootstrap images; subsequent infrastructure reconciliation preserves the currently released immutable digests and never reapplies bootstrap images. Local deployment builds with ACR Tasks by default. In GitHub Actions, CI builds and pushes both immutable SHA-tagged images exactly once, then supplies their digests to the same deployment script; the deployment phase never rebuilds them. Bicep prefers Azure Verified Modules when a suitable module exists. Deployment never substitutes a different model automatically; missing `gpt-5` capacity produces actionable quota guidance.
 
 ## 20. GitHub and CI/CD
 
