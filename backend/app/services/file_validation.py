@@ -46,6 +46,8 @@ def _invalid_name() -> AppError:
 
 
 def sanitize_file_name(raw_name: str) -> str:
+    if "/" in raw_name or "\\" in raw_name:
+        raise _invalid_name()
     without_controls = "".join(
         character
         for character in raw_name

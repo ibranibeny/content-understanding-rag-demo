@@ -113,8 +113,24 @@ def test_hidden_ambiguous_empty_and_disallowed_names_are_rejected(raw: str) -> N
     assert caught.value.code == "invalid_file_name"
 
 
-def test_traversal_is_reduced_to_basename_and_controls_are_stripped() -> None:
-    assert sanitize_file_name("../../folder\\safe\x00 name.pdf") == "safe name.pdf"
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "../../invoice.pdf",
+        "..\\..\\invoice.pdf",
+        "directory/file.pdf",
+        "/absolute/invoice.pdf",
+        "C:\\absolute\\invoice.pdf",
+        "\\\\server\\share\\invoice.pdf",
+        "directory\\nested/invoice.pdf",
+    ],
+)
+def test_path_components_are_rejected_instead_of_reduced_to_basename(raw: str) -> None:
+    with pytest.raises(AppError) as caught:
+        sanitize_file_name(raw)
+    assert caught.value.code == "invalid_file_name"
+    assert caught.value.status_code == 400
+    assert caught.value.retryable is False
 
 
 def test_name_is_normalized_to_nfc() -> None:

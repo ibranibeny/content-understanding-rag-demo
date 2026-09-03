@@ -135,7 +135,7 @@ async def test_init_reserves_quota_creates_record_and_uses_server_path() -> None
 
     response = await service.initialize(
         SESSION_KEY,
-        UploadInitRequest(file_name="../../safe name.pdf", content_type="application/pdf", size_bytes=8),
+        UploadInitRequest(file_name="safe name.pdf", content_type="application/pdf", size_bytes=8),
     )
 
     assert response.document_id == DOCUMENT_ID
@@ -150,6 +150,41 @@ async def test_init_reserves_quota_creates_record_and_uses_server_path() -> None
     quota = await sessions.get(SESSION_KEY)
     assert quota is not None
     assert (quota[0].document_count, quota[0].total_bytes) == (1, 8)
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    [
+        "../../invoice.pdf",
+        "..\\..\\invoice.pdf",
+        "directory/file.pdf",
+        "/absolute/invoice.pdf",
+        "C:\\absolute\\invoice.pdf",
+        "\\\\server\\share\\invoice.pdf",
+        "directory\\nested/invoice.pdf",
+    ],
+)
+async def test_init_rejects_path_components_before_any_side_effect(file_name: str) -> None:
+    service, documents, sessions, blobs, _ = await setup()
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(
+                file_name=file_name,
+                content_type="application/pdf",
+                size_bytes=8,
+            ),
+        )
+
+    assert caught.value.code == "invalid_file_name"
+    assert caught.value.status_code == 400
+    assert caught.value.retryable is False
+    quota = await sessions.get(SESSION_KEY)
+    assert quota is not None
+    assert (quota[0].document_count, quota[0].total_bytes) == (0, 0)
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+    assert blobs.created == []
 
 
 async def test_init_create_failure_rolls_back_quota() -> None:

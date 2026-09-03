@@ -93,7 +93,7 @@ def test_init_rotates_cookie_and_returns_exact_safe_shape() -> None:
 
     response = client.post(
         "/api/uploads/init",
-        json={"fileName": "../../a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
+        json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
     )
 
     assert response.status_code == 200
@@ -112,6 +112,37 @@ def test_init_rotates_cookie_and_returns_exact_safe_shape() -> None:
     stored = documents.persisted_text_for_test()
     assert "sig=secret" not in stored
     assert TOKEN.decode() not in stored
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    [
+        "../../invoice.pdf",
+        "..\\..\\invoice.pdf",
+        "directory/file.pdf",
+        "/absolute/invoice.pdf",
+        "C:\\absolute\\invoice.pdf",
+        "\\\\server\\share\\invoice.pdf",
+        "directory\\nested/invoice.pdf",
+    ],
+)
+def test_init_rejects_non_basename_with_stable_nonretryable_error(file_name: str) -> None:
+    client, documents = make_client()
+
+    response = client.post(
+        "/api/uploads/init",
+        json={"fileName": file_name, "contentType": "application/pdf", "sizeBytes": 8},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["error"] == {
+        "code": "invalid_file_name",
+        "message": "The file name is invalid.",
+        "retryable": False,
+        "correlationId": response.headers["x-correlation-id"],
+    }
+    assert documents.persisted_text_for_test() == ""
 
 
 def test_complete_accepts_only_etag_and_returns_document_response() -> None:

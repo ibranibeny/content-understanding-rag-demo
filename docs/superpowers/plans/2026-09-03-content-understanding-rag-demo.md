@@ -472,6 +472,20 @@ tests. The work is one coherent upload security boundary with a single state tra
 transaction; its adapters are narrow seams rather than independently deployable layers, so the task is
 atomic. No modernization scenario skill root, Execution stage, or Breakdown Hints files were supplied.
 
+**Spec-gap research (2026-09-03):** Review of the committed Task 4 implementation confirmed that
+`sanitize_file_name` replaces backslashes and then applies `PurePosixPath(...).name`, intentionally
+discarding client-supplied path components. The service and API regression tests currently encode that
+unsafe behavior by expecting `../../safe name.pdf` and `../../a.pdf` to succeed. The upload service does
+call `validate_declared_upload` before `SessionService.reserve_document`, document creation, and blob SAS
+creation, so the narrow fix is to reject either `/` or `\\` in the raw name at the beginning of
+`sanitize_file_name`, before control stripping, NFC normalization, or basename handling. Regression
+coverage will include relative traversal, ordinary directories, absolute Unix paths, Windows drive and
+UNC paths, and mixed separators; service tests will verify no quota, document, or blob side effects, and
+API tests will verify the stable nonretryable `invalid_file_name` 400 envelope. Existing NFC normalization
+for a legitimate Unicode basename remains required. This correction is atomic: it changes one validation
+invariant at the existing pre-side-effect boundary and its service/API contracts. No modernization
+scenario skill root, Execution stage, or Breakdown Hints files were supplied for this review fix.
+
 **Files:**
 - Create: `backend/app/services/file_validation.py`
 - Create: `backend/app/services/blob_service.py`

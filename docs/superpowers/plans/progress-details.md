@@ -169,3 +169,20 @@
 	a retry-loss risk because an injected upload service could persist into a repository different
 	from the lifespan dispatcher's repository. The regression produced the expected `2 failed,
 	6 passed`; the factory now requires upload service and dispatcher injection as one pair.
+
+## 2026-09-03 — Task 4 filename validation spec-gap remediation
+
+- Root cause: `sanitize_file_name` converted backslashes and selected the final `PurePosixPath`
+	component, silently accepting client-supplied path components instead of requiring a basename.
+- TDD red: validation, service, and API regressions produced the expected `21 failed, 64 passed`.
+	Cases cover relative traversal, ordinary directories, absolute Unix paths, Windows drive paths,
+	UNC paths, and mixed separators.
+- Implementation: reject either path separator in the raw client filename before control stripping,
+	Unicode NFC normalization, or basename handling. Legitimate Unicode basenames retain NFC behavior.
+- Side-effect contract: service regressions verify rejection precedes quota reservation, document
+	persistence, and blob authorization; API regressions verify the stable nonretryable
+	`invalid_file_name` HTTP 400 envelope.
+- TDD green and final verification: focused Task 4 tests `85 passed`; Ruff passed; strict mypy
+	reported no issues in 21 source files; full backend pytest `357 passed`; `git diff --check` passed.
+- Decomposition: atomic. No scenario skill root, Execution stage, or Breakdown Hints files were
+	supplied; the change is one validation invariant at the existing pre-side-effect boundary.
