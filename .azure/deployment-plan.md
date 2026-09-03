@@ -1,6 +1,6 @@
 # Azure Deployment Plan
 
-**Status:** In Progress
+**Status:** Ready for Validation
 
 ## Goal
 Deploy the functional Content Understanding RAG workshop MVP.
