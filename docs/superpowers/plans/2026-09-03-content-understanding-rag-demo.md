@@ -518,7 +518,7 @@ and the requested Task 4 remediation is treated as atomic.
 - Create: `backend/tests/api/test_upload_api.py`
 - Modify: `backend/app/main.py`
 
-- [ ] **Step 1: Write failing validation tests**
+- [x] **Step 1: Write failing validation tests**
 
 Use exact signatures: PDF `%PDF-`, DOCX/PPTX ZIP `PK\x03\x04` plus package-entry inspection, PNG `\x89PNG\r\n\x1a\n`, JPEG `\xff\xd8\xff`.
 
@@ -537,7 +537,7 @@ def test_100_mb_plus_one_byte_is_rejected() -> None:
         validate_declared_upload("a.pdf", "application/pdf", 100 * 1024 * 1024 + 1)
 ```
 
-- [ ] **Step 2: Verify failure, then implement declared and post-upload validation**
+- [x] **Step 2: Verify failure, then implement declared and post-upload validation**
 
 Run: `cd backend && uv run pytest tests/services/test_file_validation.py -q`
 
@@ -545,23 +545,23 @@ Expected before implementation: FAIL. After implementation: PASS.
 
 Normalize names with `PurePath(name).name`, Unicode NFC, an allowlist, and a 120-character limit. Generate blob paths from server UUIDs, never from user path segments.
 
-- [ ] **Step 3: Implement user-delegation SAS generation**
+- [x] **Step 3: Implement user-delegation SAS generation**
 
 Use `DefaultAzureCredential` and `BlobServiceClient.get_user_delegation_key`. Generate one-blob HTTPS-only SAS with `create=True`, `write=True`, no list/read/delete, start time five minutes in the past, and expiry 15 minutes ahead. The resulting response contains `uploadUrl`, `documentId`, `expiresAt`, and required `x-ms-blob-type: BlockBlob` header.
 
-- [ ] **Step 4: Implement completion verification and an atomic outbox**
+- [x] **Step 4: Implement completion verification and an atomic outbox**
 
 `POST /api/uploads/{id}/complete` loads properties, compares ETag/length/content type, reads signature bytes, and validates Office ZIP entries. In one Table transaction on the session partition, change `awaiting_upload` to `queued` and create a deterministic outbox row whose ID is `ingest:{documentId}:1`. Only after that commit, opportunistically dispatch to Storage Queue and mark the outbox sent. A repeated completion returns the existing state and can redispatch the same deterministic outbox item safely.
 
 Run an `OutboxDispatcher` in the API lifespan every five seconds. It reads pending rows, enqueues the versioned message, and ETag-marks them sent. A crash before queue send leaves a pending row; a crash after queue send but before mark can duplicate the message, which the leased/idempotent worker accepts safely.
 
-- [ ] **Step 5: Run focused and full tests**
+- [x] **Step 5: Run focused and full tests**
 
 Run: `cd backend && uv run pytest tests/services/test_file_validation.py tests/services/test_upload_service.py tests/api/test_upload_api.py -q`
 
 Expected: all upload boundaries, quotas, path sanitization, SAS permissions, ETag mismatch, crash-before-send, crash-after-send, and duplicate completion cases pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app backend/tests
