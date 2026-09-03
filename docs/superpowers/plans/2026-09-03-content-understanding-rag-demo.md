@@ -1024,7 +1024,7 @@ on disconnect. Locked offline sync succeeded; 11 focused tests passed; Ruff repo
 strict mypy reported no issues across 37 application modules; and the full backend suite passed with
 652 tests. Decomposition remained atomic as assessed above; no separate task/progress artifacts exist.
 
-- [ ] **Step 1: Write failing retrieval and citation tests**
+- [x] **Step 1: Write failing retrieval and citation tests**
 
 ```python
 async def test_tombstoned_evidence_is_removed_before_model_call() -> None:
@@ -1040,25 +1040,25 @@ async def test_unknown_model_citation_is_not_emitted() -> None:
     assert not any(event.type == "citation" and event.citation_id == "S99" for event in events)
 ```
 
-- [ ] **Step 2: Implement server-owned evidence blocks**
+- [x] **Step 2: Implement server-owned evidence blocks**
 
 Assign IDs `S1` through `S8`; delimit every block as untrusted evidence; include file name, locator, and content; never place document text in system/developer instructions. Batch-read document state after Search and remove non-ready, expired, foreign, deleting, or tombstoned evidence.
 
-- [ ] **Step 3: Implement the fixed GPT-5 Responses call**
+- [x] **Step 3: Implement the fixed GPT-5 Responses call**
 
 Use `gpt-5`, medium reasoning effort, bounded output, streaming, and Microsoft Entra token auth. The instruction requires evidence-only answers, inline server IDs, and explicit insufficient-evidence behavior. Do not expose model chain-of-thought.
 
-- [ ] **Step 4: Implement strict SSE**
+- [x] **Step 4: Implement strict SSE**
 
 Emit named `retrieval`, `token`, `citation`, `done`, and `error` events. Disable buffering and set `Cache-Control: no-cache`, `X-Accel-Buffering: no`, and correlation ID. Validate citations against retrieved IDs before emission. Cancel the model stream if the client disconnects.
 
-- [ ] **Step 5: Test prompt injection and streaming contracts**
+- [x] **Step 5: Test prompt injection and streaming contracts**
 
 Run: `cd backend && uv run pytest tests/services/test_rag_service.py tests/api/test_chat_api.py -q`
 
 Expected: session filtering, lifecycle postfilter, insufficient evidence, prompt injection, disconnect cancellation, event order, citation validation, and quota tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add backend/app backend/tests
