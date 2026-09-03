@@ -162,10 +162,14 @@ $apiUpstream = "https://$apiFqdn"
 
 # --- Phase 3: build images with ACR Tasks (no local Docker) ------------------
 Invoke-Checked -What "az acr build backend:$ReleaseSha" -Action {
-    az acr build --registry $acrName --image "backend:$ReleaseSha" --file Dockerfile $BackendContext
+    Push-Location $BackendContext
+    try { az acr build --registry $acrName --image "backend:$ReleaseSha" --file Dockerfile . }
+    finally { Pop-Location }
 }
 Invoke-Checked -What "az acr build frontend:$ReleaseSha" -Action {
-    az acr build --registry $acrName --image "frontend:$ReleaseSha" --file Dockerfile $FrontendContext
+    Push-Location $FrontendContext
+    try { az acr build --registry $acrName --image "frontend:$ReleaseSha" --file Dockerfile . }
+    finally { Pop-Location }
 }
 $backendDigest = (az acr repository show --name $acrName --image "backend:$ReleaseSha" --query digest -o tsv)
 if ($LASTEXITCODE -ne 0 -or -not $backendDigest) { throw "Could not resolve the backend image digest." }
