@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
+from azure.data.tables import TableTransactionError
 
 from app.core.errors import ConcurrencyConflict, RepositoryDataError
 from app.domain.models import (
@@ -270,6 +271,49 @@ async def test_atomic_transactions_use_exact_forms_and_never_partially_commit(
         await failing_repo.reserve_and_create(updated, etag, document())
     assert await failing_repo.documents.get(SESSION_KEY, DOCUMENT_ID) is None
     assert (await failing_repo.get(SESSION_KEY))[0].document_count == 0  # type: ignore[index]
+
+
+class TransactionResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.reason = "private upstream detail"
+        self.headers: dict[str, str] = {}
+
+
+@pytest.mark.parametrize("status_code", [409, 412])
+@pytest.mark.parametrize("operation", ["reserve", "queue"])
+async def test_table_transaction_conflicts_are_mapped_without_leaking_sdk_errors(
+    status_code: int, operation: str
+) -> None:
+    client = FakeTableClient()
+    repo = TableApplicationRepository(client)
+    _, session_etag = await repo.create(session(count=0))
+    versioned = await repo.documents.create(document()) if operation == "queue" else None
+    client.fail_transaction = TableTransactionError(response=TransactionResponse(status_code))
+
+    with pytest.raises(ConcurrencyConflict) as caught:
+        if operation == "reserve":
+            await repo.reserve_and_create(session(count=1), session_etag, document())
+        else:
+            assert versioned is not None
+            await repo.documents.commit_queued_with_outbox(
+                document(state=DocumentState.QUEUED), versioned.etag, outbox()
+            )
+
+    assert str(caught.value) == ""
+
+
+async def test_nonconflict_table_transaction_failure_is_stable_and_retryable() -> None:
+    client = FakeTableClient()
+    repo = TableApplicationRepository(client)
+    _, session_etag = await repo.create(session(count=0))
+    client.fail_transaction = TableTransactionError(response=TransactionResponse(503))
+
+    with pytest.raises(Exception) as caught:
+        await repo.reserve_and_create(session(count=1), session_etag, document())
+
+    assert type(caught.value).__name__ == "RepositoryUnavailableError"
+    assert "private" not in str(caught.value).lower()
 
 
 async def test_partition_listing_pagination_pending_limit_target_and_mark_sent(

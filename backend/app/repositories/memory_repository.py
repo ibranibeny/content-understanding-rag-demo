@@ -132,8 +132,8 @@ class MemoryDocumentRepository:
         ]
 
     async def list_lifecycle_candidates(
-        self, now: datetime, limit: int
-    ) -> list[VersionedDocument]:
+        self, now: datetime, limit: int, continuation: str | None = None
+    ) -> tuple[list[VersionedDocument], str | None]:
         candidates = [
             VersionedDocument(value=record, etag=self._etag(version))
             for record, version in self._documents.values()
@@ -141,7 +141,9 @@ class MemoryDocumentRepository:
             or (record.state is not DocumentState.DELETED and record.expires_at <= now)
         ]
         candidates.sort(key=lambda item: (item.value.updated_at, str(item.value.document_id)))
-        return candidates[:limit]
+        start = int(continuation) if continuation is not None else 0
+        end = min(start + limit, len(candidates))
+        return candidates[start:end], str(end) if end < len(candidates) else None
 
     async def list_deleted_before(
         self, cutoff: datetime, limit: int

@@ -101,7 +101,18 @@ class DeletionService:
         deleted = 0
         pending = 0
         skipped = 0
-        candidates = await self._repository.list_lifecycle_candidates(now, limit)
+        candidates: list[VersionedDocument] = []
+        continuation: str | None = None
+        seen_continuations: set[str] = set()
+        while len(candidates) < limit:
+            page, following = await self._repository.list_lifecycle_candidates(
+                now, min(100, limit - len(candidates)), continuation
+            )
+            candidates.extend(page)
+            if following is None or following in seen_continuations or not page:
+                break
+            seen_continuations.add(following)
+            continuation = following
         for candidate in candidates:
             if candidate.value.state is not DocumentState.DELETING:
                 try:
@@ -137,12 +148,19 @@ class DeletionService:
                 refreshed = await self._repository.get(session_key, document_id)
                 if refreshed is None or refreshed.value.state is not DocumentState.DELETING:
                     return "skipped"
-                deleted = self._deleted_record(refreshed.value, now)
-                try:
-                    await self._repository.replace(deleted, refreshed.etag)
-                except ConcurrencyConflict:
-                    return "pending"
-                return "deleted"
+            refreshed = await self._repository.get(session_key, document_id)
+            if refreshed is None or refreshed.value.state is not DocumentState.DELETING:
+                return "skipped"
+            await self._blobs.delete_control_blob(session_key, document_id)
+            latest = await self._repository.get(session_key, document_id)
+            if latest is None or latest.value.state is not DocumentState.DELETING:
+                return "skipped"
+            deleted = self._deleted_record(latest.value, now)
+            try:
+                await self._repository.replace(deleted, latest.etag)
+            except ConcurrencyConflict:
+                return "pending"
+            return "deleted"
         except asyncio.CancelledError:
             raise
         except (DocumentLeaseBusy, DocumentLeaseLost, TransientArtifactError):

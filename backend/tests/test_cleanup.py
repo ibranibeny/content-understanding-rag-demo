@@ -41,6 +41,9 @@ class Blobs:
     async def document_artifacts_exist(self, session_key: str, document_id: UUID) -> bool:
         return self.present
 
+    async def delete_control_blob(self, session_key: str, document_id: UUID) -> None:
+        return None
+
     async def aclose(self) -> None:
         return None
 
@@ -124,8 +127,28 @@ async def test_cleanup_main_closes_dependencies_when_processing_fails(
     assert closed == 1
 
 
+async def test_cleanup_main_never_prints_exception_text(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fail(bundle: Any, now: datetime, limit: int = CLEANUP_PAGE_SIZE):
+        del bundle, now, limit
+        raise RuntimeError("https://private/path?sig=SECRET document content session-key")
+
+    class Bundle:
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr("app.cleanup.run_cleanup_once", fail)
+    assert await async_main(dependency_factory=lambda settings: Bundle()) == 1  # type: ignore[arg-type]
+    output = capsys.readouterr().out
+    assert "RuntimeError" in output
+    assert "SECRET" not in output and "document content" not in output and "https://" not in output
+
+
 async def test_cleanup_without_injected_production_search_fails_closed(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert await async_main() == 1
-    assert "ChunkSearch is not configured" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "RuntimeError" in output
+    assert "ChunkSearch is not configured" not in output

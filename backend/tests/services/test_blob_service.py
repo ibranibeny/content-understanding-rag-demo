@@ -561,12 +561,13 @@ class LeaseBlob(BlobClient):
         super().__init__(b"")
         self.upload_calls: list[tuple[bytes, bool]] = []
         self.delete_calls = 0
+        self.delete_options: list[dict[str, object]] = []
 
     async def upload_blob(self, data: bytes, *, overwrite: bool) -> None:
         self.upload_calls.append((data, overwrite))
 
     async def delete_blob(self, **kwargs: object) -> None:
-        del kwargs
+        self.delete_options.append(kwargs)
         self.delete_calls += 1
 
 
@@ -685,6 +686,26 @@ async def test_control_lease_uses_server_derived_zero_byte_blob_and_renews() -> 
     assert lease_client.acquire_calls == [60]
     assert lease_client.renew_calls >= 1
     assert lease_client.release_calls == 1
+
+
+async def test_control_blob_delete_targets_control_container_after_lease_release() -> None:
+    control = LeaseBlob()
+    lease_client = LeaseClient()
+    service = RoutedService({})
+    control_name = "control/" + "a" * 64 + f"/{UUID(int=1)}.lock"
+    service.blobs[("control", control_name)] = control
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=service,
+        lease_factory=lambda blob: lease_client,
+    )
+
+    async with store.acquire_document_lease("a" * 64, UUID(int=1)):
+        assert control.delete_calls == 0
+    await store.delete_control_blob("a" * 64, UUID(int=1))
+
+    assert lease_client.release_calls == 1
+    assert service.blob_requests[-1] == ("control", control_name)
+    assert control.delete_calls == 1
 
 
 async def test_control_blob_already_existing_is_safe_and_busy_lease_is_typed() -> None:

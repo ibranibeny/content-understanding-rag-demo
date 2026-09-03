@@ -9,13 +9,13 @@ from uuid import UUID
 from azure.core import MatchConditions
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
-from azure.data.tables import UpdateMode
+from azure.data.tables import TableTransactionError, UpdateMode
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.core.errors import ConcurrencyConflict, RepositoryDataError
+from app.core.errors import ConcurrencyConflict, RepositoryDataError, RepositoryUnavailableError
 from app.domain.models import (
     DocumentRecord,
     DocumentState,
@@ -118,6 +118,18 @@ async def _all_pages(pager: Any) -> list[Entity]:
     return entities
 
 
+def _raise_transaction_error(error: TableTransactionError) -> None:
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    cause = getattr(error, "__cause__", None)
+    if status_code is None:
+        cause_response = getattr(cause, "response", None)
+        status_code = getattr(cause_response, "status_code", None)
+    if status_code in {409, 412}:
+        raise ConcurrencyConflict from None
+    raise RepositoryUnavailableError from None
+
+
 class TableApplicationRepository:
     """Session repository and atomic application persistence over one Azure Table."""
 
@@ -195,6 +207,8 @@ class TableApplicationRepository:
         ]
         try:
             responses = await self._client.submit_transaction(operations)
+        except TableTransactionError as exc:
+            _raise_transaction_error(exc)
         except (ResourceExistsError, ResourceModifiedError, ResourceNotFoundError):
             raise ConcurrencyConflict from None
         return session_update, VersionedDocument(value=document, etag=_etag(responses[1]))
@@ -272,8 +286,8 @@ class TableDocumentRepository:
         return documents
 
     async def list_lifecycle_candidates(
-        self, now: datetime, limit: int
-    ) -> list[VersionedDocument]:
+        self, now: datetime, limit: int, continuation: str | None = None
+    ) -> tuple[list[VersionedDocument], str | None]:
         pager = self._client.query_entities(
             "RowKey ge @start and RowKey lt @end and "
             "(State eq @deleting or (State ne @deleted and ExpiresAt le @now))",
@@ -297,7 +311,9 @@ class TableDocumentRepository:
             or (item.value.state is not DocumentState.DELETED and item.value.expires_at <= now)
         ]
         documents.sort(key=lambda item: (item.value.updated_at, str(item.value.document_id)))
-        return documents[:limit]
+        start = int(continuation) if continuation is not None else 0
+        end = min(start + limit, len(documents))
+        return documents[start:end], str(end) if end < len(documents) else None
 
     async def list_deleted_before(
         self, cutoff: datetime, limit: int
@@ -345,6 +361,8 @@ class TableDocumentRepository:
         ]
         try:
             responses = await self._client.submit_transaction(operations)
+        except TableTransactionError as exc:
+            _raise_transaction_error(exc)
         except (ResourceExistsError, ResourceModifiedError, ResourceNotFoundError):
             raise ConcurrencyConflict from None
         return VersionedDocument(value=document, etag=_etag(responses[0]))

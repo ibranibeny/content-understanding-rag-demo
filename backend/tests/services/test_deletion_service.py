@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from app.core.errors import AppError, ConcurrencyConflict, TransientArtifactError
-from app.domain.models import DocumentRecord, DocumentState
+from app.domain.models import DocumentRecord, DocumentState, VersionedDocument
 from app.repositories.memory_repository import MemoryDocumentRepository
 from app.services.deletion_service import (
     DeletionService,
@@ -73,6 +73,7 @@ class Blobs:
         self.error: Exception | None = None
         self.present = True
         self.delete_calls: list[tuple[str, UUID]] = []
+        self.control_delete_calls: list[tuple[str, UUID]] = []
         self.lease = Lease()
         self.on_acquire = None
 
@@ -95,6 +96,9 @@ class Blobs:
     async def document_artifacts_exist(self, session_key: str, document_id: UUID) -> bool:
         del session_key, document_id
         return self.present
+
+    async def delete_control_blob(self, session_key: str, document_id: UUID) -> None:
+        self.control_delete_calls.append((session_key, document_id))
 
 
 class Search:
@@ -194,6 +198,7 @@ async def test_busy_writer_keeps_deleting_then_next_sweep_completes_and_clears_c
     assert current.size_bytes is None
     assert current.blob_name is None
     assert blobs.delete_calls == [(SESSION, DOC)]
+    assert blobs.control_delete_calls == [(SESSION, DOC)]
     assert search.delete_calls == [(SESSION, DOC)]
 
     persisted = repository.persisted_text_for_test()
@@ -224,6 +229,27 @@ async def test_transient_artifact_failure_stays_deleting(failing: str) -> None:
     assert "private document content" not in repr(result)
 
 
+async def test_control_blob_transient_failure_retries_without_accumulating_identifiers() -> None:
+    service, _, blobs, _ = await make_service(record())
+    await service.request_delete(SESSION, DOC, NOW)
+    original = blobs.delete_control_blob
+    attempts = 0
+
+    async def transient_once(session_key: str, document_id: UUID) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TransientArtifactError("sig=SECRET private document content")
+        await original(session_key, document_id)
+
+    blobs.delete_control_blob = transient_once  # type: ignore[method-assign]
+    first = await service.sweep_pending(NOW, 10)
+    second = await service.sweep_pending(NOW + timedelta(minutes=1), 10)
+
+    assert first.pending == 1 and second.deleted == 1
+    assert blobs.control_delete_calls == [(SESSION, DOC)]
+
+
 async def test_missing_artifacts_and_repeated_sweeps_are_idempotent() -> None:
     service, repository, blobs, search = await make_service(record())
     await service.request_delete(SESSION, DOC, NOW)
@@ -252,6 +278,49 @@ async def test_expired_live_document_is_tombstoned_then_deleted() -> None:
     assert current.deletion_requested_at == NOW
 
 
+async def test_sweep_scans_repeated_continuations_past_busy_page_to_empty_end() -> None:
+    busy = [record().model_copy(update={"document_id": UUID(int=value)}) for value in range(1, 101)]
+    deletable = record().model_copy(update={"document_id": UUID(int=101)})
+    pages = {
+        None: ([item.model_copy(update={"state": DocumentState.DELETING}) for item in busy], "next"),
+        "next": ([deletable.model_copy(update={"state": DocumentState.DELETING})], "end"),
+        "end": ([], None),
+    }
+
+    class PagedRepository(MemoryDocumentRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cursors: list[str | None] = []
+
+        async def list_lifecycle_candidates(self, now, limit, continuation=None):  # type: ignore[no-untyped-def,override]
+            del now, limit
+            self.cursors.append(continuation)
+            values, following = pages[continuation]
+            return [VersionedDocument(value=value, etag='W/"1"') for value in values], following
+
+        async def get(self, session_key: str, document_id: UUID):  # type: ignore[no-untyped-def,override]
+            del session_key
+            if document_id.int <= 100:
+                return VersionedDocument(value=busy[document_id.int - 1].model_copy(update={"state": DocumentState.DELETING}), etag='W/"1"')
+            return await super().get(SESSION, document_id)
+
+    class SelectiveBlobs(Blobs):
+        @asynccontextmanager
+        async def acquire_document_lease(self, session_key: str, document_id: UUID):  # type: ignore[no-untyped-def,override]
+            if document_id.int <= 100:
+                raise DocumentLeaseBusy
+            yield self.lease
+
+    repository = PagedRepository()
+    await repository.create(deletable.model_copy(update={"state": DocumentState.DELETING}))
+    service = DeletionService(repository, SelectiveBlobs(), Search())
+
+    result = await service.sweep_pending(NOW, 102)
+
+    assert result.pending == 100 and result.deleted == 1
+    assert repository.cursors == [None, "next", "end"]
+
+
 async def test_purge_uses_exact_48_hour_boundary_and_requires_absent_artifacts() -> None:
     deleted = record(
         state=DocumentState.DELETED,
@@ -265,6 +334,7 @@ async def test_purge_uses_exact_48_hour_boundary_and_requires_absent_artifacts()
     assert await service.purge_deleted(NOW, 10) == 0
     blobs.present = False
     search.present = False
+    blobs.control_delete_calls.append((SESSION, DOC))
     assert await service.purge_deleted(NOW, 10) == 1
     assert await repository.get(SESSION, DOC) is None
 

@@ -30,6 +30,13 @@ class RepositoryDataError(Exception):
         super().__init__("Stored table entity is invalid.")
 
 
+class RepositoryUnavailableError(Exception):
+    """A repository operation failed for a retryable infrastructure reason."""
+
+    def __init__(self) -> None:
+        super().__init__("The repository is temporarily unavailable.")
+
+
 class TransientArtifactError(Exception):
     """A Blob or Search artifact operation can be retried safely."""
 

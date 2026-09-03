@@ -498,7 +498,29 @@ class AzureBlobStore:
         return names
 
     async def document_artifacts_exist(self, session_key: str, document_id: UUID) -> bool:
-        return bool(await self._artifact_names(session_key, document_id))
+        if await self._artifact_names(session_key, document_id):
+            return True
+        control = self._client().get_blob_client(
+            self._control_container, self._control_blob_name(session_key, document_id)
+        )
+        try:
+            await control.get_blob_properties()
+            return True
+        except ResourceNotFoundError:
+            return False
+        except AzureError:
+            raise TransientArtifactError from None
+
+    async def delete_control_blob(self, session_key: str, document_id: UUID) -> None:
+        control = self._client().get_blob_client(
+            self._control_container, self._control_blob_name(session_key, document_id)
+        )
+        try:
+            await control.delete_blob(delete_snapshots="include")
+        except ResourceNotFoundError:
+            pass
+        except AzureError:
+            raise TransientArtifactError from None
 
     async def delete_document_artifacts(self, session_key: str, document_id: UUID) -> None:
         for container_name, name in await self._artifact_names(session_key, document_id):

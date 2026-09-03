@@ -9,6 +9,7 @@ from app.main import ApplicationDependencies, ProductionDependencies, create_pro
 from app.services.deletion_service import DeletionService
 
 CLEANUP_PAGE_SIZE = 100
+CLEANUP_SCAN_LIMIT = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +23,7 @@ class CleanupResult:
 async def run_cleanup_once(
     dependencies: ApplicationDependencies,
     now: datetime,
-    limit: int = CLEANUP_PAGE_SIZE,
+    limit: int = CLEANUP_SCAN_LIMIT,
 ) -> CleanupResult:
     service = DeletionService(
         dependencies.application_repository.documents,
@@ -79,7 +80,7 @@ async def async_main(
         )
         return 0
     except Exception as exc:  # noqa: BLE001 - command boundary maps systemic failures to exit status
-        print(f"cleanup failed: {type(exc).__name__}: {exc}")
+        print(f"cleanup failed exception={type(exc).__name__}")
         return 1
     finally:
         if dependencies is not None:
@@ -90,4 +91,11 @@ def run() -> None:
     raise SystemExit(asyncio.run(async_main()))
 
 
-__all__ = ["CLEANUP_PAGE_SIZE", "CleanupResult", "async_main", "run", "run_cleanup_once"]
+__all__ = [
+    "CLEANUP_PAGE_SIZE",
+    "CLEANUP_SCAN_LIMIT",
+    "CleanupResult",
+    "async_main",
+    "run",
+    "run_cleanup_once",
+]
