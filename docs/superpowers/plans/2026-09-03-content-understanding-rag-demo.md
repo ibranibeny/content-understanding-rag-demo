@@ -265,7 +265,7 @@ Breakdown Hints files were supplied.
 - Create: `backend/tests/test_models.py`
 - Modify: `backend/app/main.py`
 
-- [ ] **Step 1: Write failing model/config tests**
+- [x] **Step 1: Write failing model/config tests**
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -310,13 +310,13 @@ def test_chunking_resume_stage_is_versioned() -> None:
     assert message.resume_stage == "chunking"
 ```
 
-- [ ] **Step 2: Run and verify failure**
+- [x] **Step 2: Run and verify failure**
 
 Run: `cd backend && uv run pytest tests/test_config.py tests/test_models.py -q`
 
 Expected: FAIL because the modules are missing.
 
-- [ ] **Step 3: Implement strict settings and domain models**
+- [x] **Step 3: Implement strict settings and domain models**
 
 Define `Settings` with aliases for all endpoints, account names, queue/table/container names, cookie settings, maximums, release SHA, and model deployments. Reject any chat deployment other than `gpt-5` and any embedding dimension other than 3,072.
 
@@ -339,7 +339,7 @@ class DocumentState(StrEnum):
 
 Define immutable Pydantic models for `SessionRecord`, `DocumentRecord`, `IngestionMessage`, `ContentResultCleanupMessage`, `OutboxRecord`, `DocumentChunk`, `RetrievedEvidence`, `Citation`, and API request/response DTOs. `IngestionMessage.resume_stage` is `Literal["analyzing", "chunking"]` with default `"analyzing"`; cleanup success emits `"chunking"`. Use camel-case aliases at the HTTP and queue boundaries and snake case internally.
 
-- [ ] **Step 4: Define dependency protocols**
+- [x] **Step 4: Define dependency protocols**
 
 Create focused async protocols rather than passing Azure SDK clients into route handlers:
 
@@ -358,7 +358,7 @@ class WorkQueue(Protocol):
 
 Add repository operations `commit_queued_with_outbox(document, document_etag, outbox)` using one same-partition transaction, `list_pending_outbox(limit)`, and `mark_outbox_sent(id, etag)`. Also define protocols for `BlobStore`, `ContentUnderstandingClient`, `EmbeddingClient`, `ChunkSearch`, `ChatModel`, `ReadinessCheck`, and `Clock`.
 
-- [ ] **Step 5: Implement stable error mapping**
+- [x] **Step 5: Implement stable error mapping**
 
 Create `AppError(code, status_code, message, retryable)` and one FastAPI handler returning:
 
@@ -368,11 +368,11 @@ Create `AppError(code, status_code, message, retryable)` and one FastAPI handler
 
 Never expose exception strings. Add correlation-ID middleware that accepts a valid incoming UUID or generates one and echoes `X-Correlation-ID`.
 
-- [ ] **Step 6: Add dependency-aware readiness**
+- [x] **Step 6: Add dependency-aware readiness**
 
 Implement `ReadinessRegistry` with named async checks and a two-second total timeout. `GET /health/ready` returns `200 {"status":"ready"}` only when configuration, Blob, Queue, Table, Search, and Foundry token probes succeed; otherwise it returns `503 {"status":"not_ready","failed":["search"]}` without credentials or exception text. Tests inject passing, failing, and timed-out checks.
 
-- [ ] **Step 7: Run all backend checks and commit**
+- [x] **Step 7: Run all backend checks and commit**
 
 Run: `cd backend && uv run ruff check . && uv run mypy app && uv run pytest -q`
 
