@@ -1,26 +1,45 @@
+from collections.abc import Mapping
+
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
 from app.core.config import Settings
 from app.core.errors import AppError, app_error_handler, correlation_middleware
 from app.core.readiness import ReadinessRegistry
+from app.domain.protocols import ReadinessCheck
+
+PRODUCTION_READINESS_CHECKS = frozenset({"blob", "queue", "table", "search", "foundry"})
+
+
+async def _ready() -> bool:
+    return True
+
+
+async def _not_ready() -> bool:
+    return False
 
 
 def create_app(
-    *,
     settings: Settings | None = None,
-    readiness_registry: ReadinessRegistry | None = None,
+    readiness_checks: Mapping[str, ReadinessCheck] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Content Understanding RAG Demo", version="0.1.0")
     app.state.settings = settings or Settings()
 
-    if readiness_registry is None:
-        readiness_registry = ReadinessRegistry()
+    if readiness_checks is None:
+        if app.state.settings.app_mode == "production":
+            readiness_checks = {name: _not_ready for name in PRODUCTION_READINESS_CHECKS}
+        else:
+            readiness_checks = {"configuration": _ready}
+    elif app.state.settings.app_mode == "production":
+        supplied_names = set(readiness_checks)
+        if supplied_names != PRODUCTION_READINESS_CHECKS:
+            required = ", ".join(sorted(PRODUCTION_READINESS_CHECKS))
+            raise ValueError(f"production readiness checks must contain exactly: {required}")
 
-        async def configuration_ready() -> bool:
-            return True
-
-        readiness_registry.register("configuration", configuration_ready)
+    readiness_registry = ReadinessRegistry()
+    for name, check in readiness_checks.items():
+        readiness_registry.register(name, check)
 
     app.state.readiness_registry = readiness_registry
     app.middleware("http")(correlation_middleware)

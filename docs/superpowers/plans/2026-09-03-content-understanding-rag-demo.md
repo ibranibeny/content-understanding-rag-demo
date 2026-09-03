@@ -237,6 +237,23 @@ git commit -m "chore: bootstrap document intelligence monorepo"
 
 ### Task 2: Define backend contracts, configuration, and stable errors
 
+**Spec-compliance remediation research (2026-09-03):** The existing implementation defines
+all nine required persistence/queue/evidence models and seven HTTP DTOs in
+`backend/app/domain/models.py`, but its shared `ContractModel` only generates aliases; callers
+must currently opt in with `by_alias=True`, so default boundary dumps violate the camel-case
+contract. The model suite covers only a subset of those types and does not assert the complete
+13-value `DocumentState` set, default `resumeStage`, JSON output, all UUID/session/time guards, or
+every API DTO. The application factory currently accepts a mutable `ReadinessRegistry` and, when
+none is supplied, registers only an always-true `configuration` probe in every mode. The required
+factory boundary instead accepts a mapping of `ReadinessCheck` callables: local/test omission keeps
+the configuration-only probe, production omission installs fail-closed probes named `blob`,
+`queue`, `table`, `search`, and `foundry`, and production injection validates that exact name set
+without invoking probes during import or construction. The readiness response and liveness route
+contracts remain unchanged. This remediation is one atomic backend-contract gate: the model and
+readiness changes share the same focused contract test/quality-check cycle and introduce no Azure
+client implementation or internal strategy decision. No modernization scenario skill root or
+Breakdown Hints files were supplied.
+
 **Files:**
 - Create: `backend/app/core/config.py`
 - Create: `backend/app/core/errors.py`
