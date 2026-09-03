@@ -1,0 +1,48 @@
+from dataclasses import dataclass
+from typing import Any
+from uuid import UUID, uuid4
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
+
+CORRELATION_HEADER = "X-Correlation-ID"
+
+
+@dataclass(frozen=True, slots=True)
+class AppError(Exception):
+    code: str
+    status_code: int
+    message: str
+    retryable: bool
+
+
+async def correlation_middleware(
+    request: Request, call_next: RequestResponseEndpoint
+) -> Response:
+    raw_correlation_id = request.headers.get(CORRELATION_HEADER)
+    try:
+        correlation_id = str(UUID(raw_correlation_id)) if raw_correlation_id else str(uuid4())
+    except (ValueError, AttributeError):
+        correlation_id = str(uuid4())
+
+    request.state.correlation_id = correlation_id
+    response = await call_next(request)
+    response.headers[CORRELATION_HEADER] = correlation_id
+    return response
+
+
+async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    if not isinstance(exc, AppError):
+        raise exc
+    correlation_id = getattr(request.state, "correlation_id", str(uuid4()))
+    envelope: dict[str, Any] = {
+        "error": {
+            "code": exc.code,
+            "message": exc.message,
+            "retryable": exc.retryable,
+            "correlationId": correlation_id,
+        }
+    }
+    return JSONResponse(status_code=exc.status_code, content=envelope)
