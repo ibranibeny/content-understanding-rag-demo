@@ -85,10 +85,10 @@ class SessionRecord(ContractModel):
 class DocumentRecord(ContractModel):
     session_key: SessionKey
     document_id: UUID
-    file_name: str
-    content_type: str
-    size_bytes: int = Field(ge=0)
-    blob_name: str
+    file_name: str | None
+    content_type: str | None
+    size_bytes: int | None = Field(ge=0)
+    blob_name: str | None
     state: DocumentState
     created_at: UtcDateTime
     updated_at: UtcDateTime
@@ -108,6 +108,16 @@ class DocumentRecord(ContractModel):
     tombstoned_at: UtcDateTime | None = None
     deletion_requested_at: UtcDateTime | None = None
     deleted_at: UtcDateTime | None = None
+
+    @model_validator(mode="after")
+    def require_active_document_metadata(self) -> Self:
+        metadata = (self.file_name, self.content_type, self.size_bytes, self.blob_name)
+        if self.state is DocumentState.DELETED:
+            if any(value is not None for value in metadata):
+                raise ValueError("deleted documents must not retain upload metadata")
+        elif any(value is None for value in metadata):
+            raise ValueError("active documents require upload metadata")
+        return self
 
 
 class IngestionMessage(ContractModel):

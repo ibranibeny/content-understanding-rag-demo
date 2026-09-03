@@ -1,0 +1,198 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+from uuid import UUID
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import Settings
+from app.domain.models import DocumentChunk, RetrievedEvidence
+from app.main import ApplicationDependencies, create_app, create_production_dependencies
+from app.repositories.memory_repository import MemoryApplicationRepository, MemoryWorkQueue
+from app.repositories.table_repository import TableApplicationRepository
+from app.services.blob_service import AzureBlobStore
+from app.services.queue_service import AzureWorkQueue
+
+
+async def ready() -> bool:
+    return True
+
+
+class Blobs:
+    closed = 0
+
+    async def create_upload(self, blob_name: str, content_type: str) -> Any:
+        raise AssertionError("not used")
+
+    async def verify_upload(self, *args: object, **kwargs: object) -> Any:
+        raise AssertionError("not used")
+
+    @asynccontextmanager
+    async def acquire_document_lease(
+        self, session_key: str, document_id: UUID
+    ) -> AsyncIterator[Any]:
+        del session_key, document_id
+        raise AssertionError("not used")
+        yield
+
+    async def delete_document_artifacts(self, session_key: str, document_id: UUID) -> None:
+        del session_key, document_id
+
+    async def document_artifacts_exist(self, session_key: str, document_id: UUID) -> bool:
+        del session_key, document_id
+        return False
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+class Search:
+    async def delete_for_document(self, session_key: str, document_id: UUID) -> None:
+        del session_key, document_id
+
+    async def has_for_document(self, session_key: str, document_id: UUID) -> bool:
+        del session_key, document_id
+        return False
+
+    async def upsert(self, chunks: list[DocumentChunk]) -> None:
+        del chunks
+
+    async def search(
+        self,
+        session_key: str,
+        query: str,
+        vector: list[float],
+        document_ids: list[UUID],
+    ) -> list[RetrievedEvidence]:
+        del session_key, query, vector, document_ids
+        return []
+
+
+class DurableRepository:
+    def __init__(self) -> None:
+        self.backing = MemoryApplicationRepository()
+        self.sessions = self.backing.sessions
+        self.documents = self.backing.documents
+
+
+def production_settings() -> Settings:
+    return Settings(app_mode="production", frontend_origin="https://frontend.example.com")
+
+
+def test_production_rejects_omitted_dependency_bundle_instead_of_using_memory() -> None:
+    with pytest.raises(ValueError, match="production requires explicit ApplicationDependencies"):
+        create_app(settings=production_settings())
+
+
+def test_production_wires_one_explicit_dependency_bundle_without_memory_defaults() -> None:
+    repository = DurableRepository()
+    queue = AzureWorkQueue(QueueClient(), QueueClient())
+    blobs = Blobs()
+    search = Search()
+    dependencies = ApplicationDependencies(
+        application_repository=repository,
+        work_queue=queue,
+        blob_store=blobs,
+        chunk_search=search,
+        readiness_checks={
+            name: ready for name in ("blob", "queue", "table", "search", "foundry")
+        },
+    )
+
+    app = create_app(settings=production_settings(), dependencies=dependencies)
+
+    assert app.state.document_repository is repository.documents
+    assert app.state.work_queue is queue
+    assert app.state.upload_service.blobs is blobs
+    assert app.state.deletion_service._search is search
+    assert app.state.session_service.repository is repository.sessions
+    with TestClient(app) as client:
+        assert client.get("/health/ready").status_code == 200
+    assert blobs.closed == 0
+
+
+def test_production_bundle_rejects_memory_repository_or_queue() -> None:
+    repository = MemoryApplicationRepository()
+    checks = {name: ready for name in ("blob", "queue", "table", "search", "foundry")}
+    dependencies = ApplicationDependencies(
+        application_repository=repository,
+        work_queue=MemoryWorkQueue(),
+        blob_store=Blobs(),
+        chunk_search=Search(),
+        readiness_checks=checks,
+    )
+
+    with pytest.raises(ValueError, match="production dependencies must not use memory"):
+        create_app(settings=production_settings(), dependencies=dependencies)
+
+
+class QueueClient:
+    async def send_message(self, content: str) -> None:
+        del content
+
+    async def get_queue_properties(self):  # type: ignore[no-untyped-def]
+        return type("Properties", (), {"approximate_message_count": 0})()
+
+    async def close(self) -> None:
+        return None
+
+
+class Credential:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def get_token(self, *scopes: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        del scopes, kwargs
+        raise AssertionError("no network access expected")
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_production_helper_constructs_table_queue_and_three_container_blob_graph() -> None:
+    credential = Credential()
+    settings = Settings(
+        app_mode="production",
+        frontend_origin="https://frontend.example.com",
+        storage_account_name="durableacct",
+        uploads_container="incoming",
+        derived_container="outputs",
+        control_container="locks",
+    )
+    class Closable:
+        async def close(self) -> None:
+            return None
+
+    table_client = Closable()
+    repository = TableApplicationRepository(table_client, owns_client=True)  # type: ignore[arg-type]
+    queue = AzureWorkQueue(QueueClient(), QueueClient(), owns_clients=True)
+    blobs = AzureBlobStore(
+        "durableacct",
+        "incoming",
+        type("Clock", (), {"now": lambda self: None})(),  # type: ignore[arg-type]
+        derived_container="outputs",
+        control_container="locks",
+        service_client=Closable(),  # type: ignore[arg-type]
+        own_service_client=True,
+    )
+    dependencies = create_production_dependencies(
+        settings,
+        Search(),
+        {name: ready for name in ("blob", "queue", "table", "search", "foundry")},
+        credential=credential,  # type: ignore[arg-type]
+        repository_factory=lambda settings, credential: repository,
+        queue_factory=lambda settings, credential: queue,
+        blob_factory=lambda settings, credential: blobs,
+    )
+
+    assert isinstance(dependencies.application_repository, TableApplicationRepository)
+    assert isinstance(dependencies.work_queue, AzureWorkQueue)
+    assert isinstance(dependencies.blob_store, AzureBlobStore)
+    assert dependencies.blob_store._uploads_container == "incoming"
+    assert dependencies.blob_store._derived_container == "outputs"
+    assert dependencies.blob_store._control_container == "locks"
+
+    with TestClient(create_app(settings=settings, dependencies=dependencies)):
+        pass
+    assert credential.close_calls == 1

@@ -20,7 +20,7 @@ from azure.storage.blob import BlobSasPermissions, generate_blob_sas
 from azure.storage.blob.aio import BlobLeaseClient, BlobServiceClient
 
 from app.core.errors import AppError, TransientArtifactError
-from app.domain.protocols import BlobUploadGrant, Clock, VerifiedBlobUpload
+from app.domain.protocols import BlobUploadGrant, Clock, DocumentLeaseContext, VerifiedBlobUpload
 from app.services.file_validation import MAX_FILE_BYTES, TYPE_MAP, validate_office_package_stream
 
 SAS_CLOCK_SKEW = timedelta(minutes=5)
@@ -111,9 +111,11 @@ class AzureBlobStore:
     def __init__(
         self,
         account_name: str,
-        container_name: str,
+        uploads_container: str,
         clock: Clock,
         *,
+        derived_container: str = "derived",
+        control_container: str = "control",
         credential: AsyncTokenCredential | None = None,
         service_client: BlobServiceClientLike | None = None,
         sas_factory: SasFactory = generate_blob_sas,
@@ -125,7 +127,9 @@ class AzureBlobStore:
         own_service_client: bool = False,
     ) -> None:
         self._account_name = account_name
-        self._container_name = container_name
+        self._uploads_container = uploads_container
+        self._derived_container = derived_container
+        self._control_container = control_container
         self._clock = clock
         self._credential = credential
         self._service_client = service_client
@@ -162,7 +166,7 @@ class AzureBlobStore:
         permission = BlobSasPermissions(create=True, write=True)
         sas = self._sas_factory(
             account_name=self._account_name,
-            container_name=self._container_name,
+            container_name=self._uploads_container,
             blob_name=blob_name,
             user_delegation_key=key,
             permission=permission,
@@ -170,7 +174,7 @@ class AzureBlobStore:
             expiry=expiry,
             protocol="https",
         )
-        blob = client.get_blob_client(self._container_name, blob_name)
+        blob = client.get_blob_client(self._uploads_container, blob_name)
         return UploadGrant(
             upload_url=f"{blob.url}?{sas}",
             expires_at=expiry,
@@ -186,7 +190,7 @@ class AzureBlobStore:
         *,
         office: bool,
     ) -> VerifiedUpload:
-        blob = self._client().get_blob_client(self._container_name, blob_name)
+        blob = self._client().get_blob_client(self._uploads_container, blob_name)
         try:
             properties = await blob.get_blob_properties()
         except ResourceNotFoundError:
@@ -237,6 +241,37 @@ class AzureBlobStore:
         return VerifiedUpload(
             header=content[:HEADER_BYTES],
         )
+
+    async def create_read_url(self, blob_name: str, expires_at: datetime) -> str:
+        start = self._clock.now() - SAS_CLOCK_SKEW
+        client = self._client()
+        key = await client.get_user_delegation_key(start, expires_at)
+        sas = self._sas_factory(
+            account_name=self._account_name,
+            container_name=self._uploads_container,
+            blob_name=blob_name,
+            user_delegation_key=key,
+            permission=BlobSasPermissions(read=True),
+            start=start,
+            expiry=expires_at,
+            protocol="https",
+        )
+        blob = client.get_blob_client(self._uploads_container, blob_name)
+        return f"{blob.url}?{sas}"
+
+    async def read_prefix(self, blob_name: str, length: int) -> bytes:
+        download = await self._client().get_blob_client(
+            self._uploads_container, blob_name
+        ).download_blob(offset=0, length=length)
+        return await download.readall()
+
+    async def delete(self, blob_name: str) -> None:
+        try:
+            await self._client().get_blob_client(
+                self._uploads_container, blob_name
+            ).delete_blob(delete_snapshots="include")
+        except ResourceNotFoundError:
+            pass
 
     async def _verify_office(
         self, download: Download, expected_size: int, expected_content_type: str
@@ -297,12 +332,17 @@ class AzureBlobStore:
                     lease.mark_lost()
                     return
 
+    def acquire_document_lease(
+        self, session_key: str, document_id: UUID
+    ) -> DocumentLeaseContext:
+        return self._document_lease_context(session_key, document_id)
+
     @asynccontextmanager
-    async def acquire_document_lease(
+    async def _document_lease_context(
         self, session_key: str, document_id: UUID
     ) -> AsyncIterator[RenewableDocumentLease]:
         control = self._client().get_blob_client(
-            self._container_name, self._control_blob_name(session_key, document_id)
+            self._control_container, self._control_blob_name(session_key, document_id)
         )
         try:
             await control.upload_blob(b"", overwrite=False)
@@ -339,15 +379,21 @@ class AzureBlobStore:
             except AzureError:
                 lease.mark_lost()
 
-    async def _artifact_names(self, session_key: str, document_id: UUID) -> list[str]:
-        container = self._client().get_container_client(self._container_name)
-        names: list[str] = []
+    async def _artifact_names(
+        self, session_key: str, document_id: UUID
+    ) -> list[tuple[str, str]]:
+        names: list[tuple[str, str]] = []
         try:
-            for prefix in self._artifact_prefixes(session_key, document_id):
+            for container_name, prefix in zip(
+                (self._uploads_container, self._derived_container),
+                self._artifact_prefixes(session_key, document_id),
+                strict=True,
+            ):
+                container = self._client().get_container_client(container_name)
                 async for item in container.list_blobs(name_starts_with=prefix):
                     name = getattr(item, "name", None)
                     if isinstance(name, str) and name.startswith(prefix):
-                        names.append(name)
+                        names.append((container_name, name))
         except AzureError:
             raise TransientArtifactError from None
         return names
@@ -356,9 +402,9 @@ class AzureBlobStore:
         return bool(await self._artifact_names(session_key, document_id))
 
     async def delete_document_artifacts(self, session_key: str, document_id: UUID) -> None:
-        for name in await self._artifact_names(session_key, document_id):
+        for container_name, name in await self._artifact_names(session_key, document_id):
             try:
-                await self._client().get_blob_client(self._container_name, name).delete_blob(
+                await self._client().get_blob_client(container_name, name).delete_blob(
                     delete_snapshots="include"
                 )
             except ResourceNotFoundError:

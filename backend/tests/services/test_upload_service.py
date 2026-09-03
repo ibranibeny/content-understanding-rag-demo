@@ -523,7 +523,15 @@ async def test_repeated_complete_returns_existing_valid_state_and_targets_its_ou
     await service.complete(SESSION_KEY, DOCUMENT_ID, '"etag"', CORRELATION_ID)
     current = await documents.get(SESSION_KEY, DOCUMENT_ID)
     assert current is not None
-    await documents.replace(current.value.model_copy(update={"state": state}), current.etag)
+    updates: dict[str, object] = {"state": state}
+    if state is DocumentState.DELETED:
+        updates.update(
+            file_name=None,
+            content_type=None,
+            size_bytes=None,
+            blob_name=None,
+        )
+    await documents.replace(current.value.model_copy(update=updates), current.etag)
     dispatcher.calls.clear()
 
     response = await service.complete(SESSION_KEY, DOCUMENT_ID, '"ignored"', CORRELATION_ID)
@@ -544,7 +552,15 @@ async def test_complete_rejects_terminal_or_deleting_states_without_dispatch(
     )
     current = await documents.get(SESSION_KEY, DOCUMENT_ID)
     assert current is not None
-    await documents.replace(current.value.model_copy(update={"state": state}), current.etag)
+    updates: dict[str, object] = {"state": state}
+    if state is DocumentState.DELETED:
+        updates.update(
+            file_name=None,
+            content_type=None,
+            size_bytes=None,
+            blob_name=None,
+        )
+    await documents.replace(current.value.model_copy(update=updates), current.etag)
 
     with pytest.raises(AppError) as caught:
         await service.complete(SESSION_KEY, DOCUMENT_ID, '"ignored"', CORRELATION_ID)

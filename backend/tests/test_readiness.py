@@ -155,16 +155,8 @@ def test_production_without_injected_checks_fails_closed_for_every_dependency() 
     settings = Settings(
         app_mode="production", frontend_origin="https://frontend.example.com"
     )
-    client = TestClient(create_app(settings=settings))
-
-    response = client.get("/health/ready")
-
-    assert response.status_code == 503
-    assert response.json() == {
-        "status": "not_ready",
-        "failed": ["blob", "foundry", "queue", "search", "table"],
-    }
-    assert client.get("/health/live").json() == {"status": "ok"}
+    with pytest.raises(ValueError, match="production requires explicit ApplicationDependencies"):
+        create_app(settings=settings)
 
 
 def test_production_accepts_exact_named_dependency_checks() -> None:
@@ -176,17 +168,13 @@ def test_production_accepts_exact_named_dependency_checks() -> None:
         "foundry": passing_check,
     }
 
-    response = TestClient(
+    with pytest.raises(ValueError, match="production requires explicit ApplicationDependencies"):
         create_app(
             settings=Settings(
                 app_mode="production", frontend_origin="https://frontend.example.com"
             ),
             readiness_checks=checks,
         )
-    ).get("/health/ready")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ready"}
 
 
 @pytest.mark.parametrize(
@@ -207,7 +195,7 @@ def test_production_accepts_exact_named_dependency_checks() -> None:
 def test_production_rejects_incomplete_or_extra_dependency_checks(
     checks: Mapping[str, ReadinessCheck],
 ) -> None:
-    with pytest.raises(ValueError, match="blob.*foundry.*queue.*search.*table"):
+    with pytest.raises(ValueError, match="production requires explicit ApplicationDependencies"):
         create_app(
             settings=Settings(
                 app_mode="production", frontend_origin="https://frontend.example.com"

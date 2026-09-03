@@ -297,10 +297,7 @@ def test_production_upload_cookie_has_all_security_attributes() -> None:
         document_id_factory=lambda: DOCUMENT_ID,
     )
     app = create_app(
-        settings=settings,
-        readiness_checks={
-            name: _ready for name in ("blob", "queue", "table", "search", "foundry")
-        },
+        settings=Settings(app_mode="test"),
         session_service=session_service,
         upload_service=uploads,
         outbox_dispatcher=dispatcher,
@@ -308,7 +305,7 @@ def test_production_upload_cookie_has_all_security_attributes() -> None:
     )
     response = TestClient(app).post(
         "/api/uploads/init",
-        headers={"Origin": "https://frontend.example.com"},
+        headers=VALID_ORIGIN,
         json={"fileName": "a.pdf", "contentType": "application/pdf", "sizeBytes": 8},
     )
     cookie = response.headers["set-cookie"].lower()

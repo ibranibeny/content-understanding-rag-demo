@@ -25,7 +25,6 @@ async def get_session(
     response: Response,
     service: Annotated[SessionService, Depends(get_session_service)],
 ) -> SessionResponse:
-    settings = request.app.state.settings
     response.headers["Cache-Control"] = "no-store"
     raw_cookie = request.cookies.get(SESSION_COOKIE_NAME)
     resolved = await service.resolve(raw_cookie)
@@ -35,7 +34,7 @@ async def get_session(
             key=SESSION_COOKIE_NAME,
             value=resolved.raw_token,
             max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
-            secure=settings.app_mode == "production",
+            secure=service.settings.app_mode == "production",
             httponly=SESSION_COOKIE_HTTP_ONLY,
             samesite=SESSION_COOKIE_SAME_SITE,
             path=SESSION_COOKIE_PATH,

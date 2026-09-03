@@ -131,13 +131,9 @@ def test_expired_cookie_rotates() -> None:
 
 
 def test_deployed_cookie_is_secure_with_all_other_flags() -> None:
-    async def ready() -> bool:
-        return True
-
     settings = Settings(
         app_mode="production", frontend_origin="https://frontend.example.com"
     )
-    checks = {name: ready for name in ("blob", "queue", "table", "search", "foundry")}
     service = SessionService(
         MemorySessionRepository(),
         MutableClock(),
@@ -145,7 +141,7 @@ def test_deployed_cookie_is_secure_with_all_other_flags() -> None:
         token_factory=lambda: TOKEN,
     )
     client = TestClient(
-        create_app(settings=settings, readiness_checks=checks, session_service=service)
+        create_app(settings=Settings(app_mode="test"), session_service=service)
     )
 
     response = client.get("/api/session")
@@ -159,9 +155,6 @@ def test_deployed_cookie_is_secure_with_all_other_flags() -> None:
 
 
 def test_production_mode_forces_secure_cookie() -> None:
-    async def ready() -> bool:
-        return True
-
     settings = Settings(
         app_mode="production", frontend_origin="https://frontend.example.com"
     )
@@ -171,9 +164,8 @@ def test_production_mode_forces_secure_cookie() -> None:
         settings=settings,
         token_factory=lambda: TOKEN,
     )
-    checks = {name: ready for name in ("blob", "queue", "table", "search", "foundry")}
     client = TestClient(
-        create_app(settings=settings, readiness_checks=checks, session_service=service)
+        create_app(settings=Settings(app_mode="test"), session_service=service)
     )
 
     response = client.get("/api/session")

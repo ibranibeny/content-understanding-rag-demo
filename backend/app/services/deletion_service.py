@@ -154,6 +154,10 @@ class DeletionService:
             update={
                 "state": DocumentState.DELETED,
                 "updated_at": now,
+                "file_name": None,
+                "content_type": None,
+                "size_bytes": None,
+                "blob_name": None,
                 "document_type": None,
                 "title": None,
                 "content_result_id": None,

@@ -35,7 +35,7 @@ async def resolve_session_cookie(
             key=SESSION_COOKIE_NAME,
             value=resolved.raw_token,
             max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
-            secure=request.app.state.settings.app_mode == "production",
+            secure=service.settings.app_mode == "production",
             httponly=SESSION_COOKIE_HTTP_ONLY,
             samesite=SESSION_COOKIE_SAME_SITE,
             path=SESSION_COOKIE_PATH,

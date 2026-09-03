@@ -506,6 +506,35 @@ class PrefixService(BlobService):
         return Container()
 
 
+class RoutedService(BlobService):
+    def __init__(self, names: dict[str, list[str]]) -> None:
+        super().__init__(LeaseBlob())
+        self.names = names
+        self.blob_requests: list[tuple[str, str]] = []
+        self.list_requests: list[tuple[str, str]] = []
+        self.blobs: dict[tuple[str, str], LeaseBlob] = {}
+
+    def get_blob_client(self, container: str, blob: str) -> LeaseBlob:
+        self.blob_requests.append((container, blob))
+        return self.blobs.setdefault((container, blob), LeaseBlob())
+
+    def get_container_client(self, container: str):  # type: ignore[no-untyped-def]
+        service = self
+
+        class Container:
+            def list_blobs(self, *, name_starts_with: str):  # type: ignore[no-untyped-def]
+                service.list_requests.append((container, name_starts_with))
+
+                async def values():  # type: ignore[no-untyped-def]
+                    for name in service.names.get(container, []):
+                        if name.startswith(name_starts_with):
+                            yield SimpleNamespace(name=name)
+
+                return values()
+
+        return Container()
+
+
 async def test_control_lease_uses_server_derived_zero_byte_blob_and_renews() -> None:
     control = LeaseBlob()
     lease_client = LeaseClient()
@@ -603,3 +632,45 @@ async def test_document_artifacts_use_only_server_prefixes_and_missing_is_safe()
 
     assert service.requested_names[-2:] == names[:2]
     assert blob.delete_calls == 2
+
+
+async def test_operations_route_to_distinct_configured_containers_without_leakage() -> None:
+    document_id = UUID("9f4b8484-9f6b-44f2-b4d4-e5e7687c80df")
+    session = "a" * 64
+    upload = f"uploads/{session}/{document_id}/private.pdf"
+    derived = f"derived/{session}/{document_id}/content.md"
+    control = f"control/{session}/{document_id}.lock"
+    service = RoutedService(
+        {
+            "incoming": [upload, derived],
+            "outputs": [upload, derived],
+            "locks": [control, derived],
+        }
+    )
+    lease_client = LeaseClient()
+    store = AzureBlobStore(
+        "acct",
+        "incoming",
+        Clock(),
+        derived_container="outputs",
+        control_container="locks",
+        service_client=service,
+        sas_factory=lambda **kwargs: "sig=test",
+        lease_factory=lambda blob: lease_client,
+    )
+
+    await store.create_upload(upload, "application/pdf")
+    async with store.acquire_document_lease(session, document_id):
+        pass
+    await store.delete_document_artifacts(session, document_id)
+
+    assert ("incoming", upload) in service.blob_requests
+    assert ("locks", control) in service.blob_requests
+    assert service.list_requests == [
+        ("incoming", f"uploads/{session}/{document_id}/"),
+        ("outputs", f"derived/{session}/{document_id}/"),
+    ]
+    assert ("outputs", derived) in service.blob_requests
+    assert ("incoming", derived) not in service.blob_requests
+    assert ("outputs", upload) not in service.blob_requests
+    assert all(container != "locks" for container, _ in service.list_requests)

@@ -29,28 +29,29 @@ def record(
     expires_at: datetime = NOW + timedelta(hours=1),
     deleted_at: datetime | None = None,
 ) -> DocumentRecord:
+    deleted = state is DocumentState.DELETED
     return DocumentRecord(
         session_key=session,
         document_id=DOC,
-        file_name="private-invoice.pdf",
-        content_type="application/pdf",
-        size_bytes=100,
-        blob_name=f"uploads/{session}/{DOC}/private-invoice.pdf",
+        file_name=None if deleted else "private-invoice.pdf",
+        content_type=None if deleted else "application/pdf",
+        size_bytes=None if deleted else 100,
+        blob_name=None if deleted else f"uploads/{session}/{DOC}/private-invoice.pdf",
         state=state,
         created_at=NOW - timedelta(hours=1),
         updated_at=NOW - timedelta(minutes=1),
         expires_at=expires_at,
-        document_type="invoice",
-        title="Private invoice",
-        content_result_id="result-private",
-        content_operation_url="https://example.test/private-operation",
-        extraction={"private": "content"},
-        markdown_blob_name=f"derived/{session}/{DOC}/content.md",
-        page_count=2,
-        chunk_count=3,
-        token_count=50,
-        failure_code="private-failure",
-        failure_retryable=True,
+        document_type=None if deleted else "invoice",
+        title=None if deleted else "Private invoice",
+        content_result_id=None if deleted else "result-private",
+        content_operation_url=None if deleted else "https://example.test/private-operation",
+        extraction=None if deleted else {"private": "content"},
+        markdown_blob_name=None if deleted else f"derived/{session}/{DOC}/content.md",
+        page_count=None if deleted else 2,
+        chunk_count=None if deleted else 3,
+        token_count=None if deleted else 50,
+        failure_code=None if deleted else "private-failure",
+        failure_retryable=not deleted,
         deleted_at=deleted_at,
     )
 
@@ -188,8 +189,25 @@ async def test_busy_writer_keeps_deleting_then_next_sweep_completes_and_clears_c
     assert current.markdown_blob_name is None
     assert (current.page_count, current.chunk_count, current.token_count) == (None, None, None)
     assert current.failure_code is None and not current.failure_retryable
+    assert current.file_name is None
+    assert current.content_type is None
+    assert current.size_bytes is None
+    assert current.blob_name is None
     assert blobs.delete_calls == [(SESSION, DOC)]
     assert search.delete_calls == [(SESSION, DOC)]
+
+    persisted = repository.persisted_text_for_test()
+    for sensitive in (
+        "private-invoice.pdf",
+        "application/pdf",
+        f"uploads/{SESSION}/{DOC}",
+        "Private invoice",
+        "result-private",
+        "private-operation",
+        "private-failure",
+        "private\":\"content",
+    ):
+        assert sensitive not in persisted
 
 
 @pytest.mark.parametrize("failing", ["blob", "search"])

@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from types import TracebackType
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -134,7 +135,12 @@ class DocumentLease(Protocol):
 class DocumentLeaseContext(Protocol):
     async def __aenter__(self) -> DocumentLease: ...
 
-    async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> bool | None: ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None: ...
 
 
 class ContentUnderstandingClient(Protocol):

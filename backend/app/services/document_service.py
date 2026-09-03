@@ -78,6 +78,8 @@ class DocumentService:
                 or document.tombstoned_at is not None
             ):
                 raise self._invalid_state()
+            if document.blob_name is None:
+                raise RuntimeError("retryable document metadata is missing")
             now = self._clock.now()
             next_attempt = document.retry_count + 1
             queued = document.model_copy(
@@ -152,10 +154,14 @@ class DocumentService:
 
     @staticmethod
     def _summary(document: DocumentRecord) -> DocumentSummaryResponse:
+        if document.file_name is None:
+            raise RuntimeError("visible document metadata is missing")
         return DocumentSummaryResponse.model_validate(document, from_attributes=True)
 
     @staticmethod
     def _detail(document: DocumentRecord) -> DocumentResponse:
+        if document.file_name is None:
+            raise RuntimeError("visible document metadata is missing")
         return DocumentResponse.model_validate(document, from_attributes=True)
 
     @staticmethod

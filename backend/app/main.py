@@ -1,9 +1,12 @@
 import asyncio
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from azure.core.credentials_async import AsyncTokenCredential
+from azure.identity.aio import DefaultAzureCredential
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
@@ -20,16 +23,28 @@ from app.core.errors import (
 )
 from app.core.readiness import ReadinessRegistry
 from app.domain.models import DocumentChunk, RetrievedEvidence
-from app.domain.protocols import DocumentRepository, ReadinessCheck
+from app.domain.protocols import (
+    BlobStore,
+    ChunkSearch,
+    DocumentRepository,
+    IngestionBacklog,
+    ReadinessCheck,
+    SessionDocumentRepository,
+    SessionRepository,
+    UploadBlobStore,
+    WorkQueue,
+)
 from app.repositories.memory_repository import (
     MemoryApplicationRepository,
     MemorySessionRepository,
     MemoryWorkQueue,
 )
+from app.repositories.table_repository import TableApplicationRepository
 from app.services.blob_service import AzureBlobStore
 from app.services.deletion_service import DeletionService
 from app.services.document_service import DocumentService
 from app.services.outbox_service import OutboxDispatcher
+from app.services.queue_service import AzureWorkQueue
 from app.services.session_service import SessionService, SystemClock
 from app.services.upload_service import UploadService
 
@@ -50,6 +65,100 @@ class ApplicationDispatcher(Protocol):
     async def dispatch_outbox(self, outbox_id: str) -> bool: ...
 
     async def run(self) -> None: ...
+
+
+class ApplicationRepository(SessionDocumentRepository, Protocol):
+    sessions: SessionRepository
+    documents: DocumentRepository
+
+
+class ApplicationWorkQueue(WorkQueue, IngestionBacklog, Protocol):
+    pass
+
+
+class CloseableApplicationRepository(ApplicationRepository, Protocol):
+    async def aclose(self) -> None: ...
+
+
+class CloseableApplicationWorkQueue(ApplicationWorkQueue, Protocol):
+    async def aclose(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationDependencies:
+    application_repository: ApplicationRepository
+    work_queue: ApplicationWorkQueue
+    blob_store: BlobStore
+    chunk_search: ChunkSearch
+    readiness_checks: Mapping[str, ReadinessCheck]
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionDependencies(ApplicationDependencies):
+    application_repository: CloseableApplicationRepository
+    work_queue: CloseableApplicationWorkQueue
+    credential: AsyncTokenCredential
+
+    async def aclose(self) -> None:
+        await self.application_repository.aclose()
+        await self.work_queue.aclose()
+        await self.blob_store.aclose()
+        await self.credential.close()
+
+
+def create_production_dependencies(
+    settings: Settings,
+    chunk_search: ChunkSearch,
+    readiness_checks: Mapping[str, ReadinessCheck],
+    *,
+    credential: AsyncTokenCredential | None = None,
+    repository_factory: Callable[
+        [Settings, AsyncTokenCredential], CloseableApplicationRepository
+    ] | None = None,
+    queue_factory: Callable[[Settings, AsyncTokenCredential], CloseableApplicationWorkQueue]
+    | None = None,
+    blob_factory: Callable[[Settings, AsyncTokenCredential], BlobStore] | None = None,
+) -> ApplicationDependencies:
+    if settings.app_mode != "production":
+        raise ValueError("production dependencies require production settings")
+    try:
+        actual_credential = credential or DefaultAzureCredential()
+    except ImportError as exc:
+        raise ValueError(
+            "production Azure clients require the aiohttp async transport"
+        ) from exc
+    repository = (
+        repository_factory(settings, actual_credential)
+        if repository_factory is not None
+        else TableApplicationRepository.from_settings(
+            settings, credential=actual_credential
+        )
+    )
+    queue = (
+        queue_factory(settings, actual_credential)
+        if queue_factory is not None
+        else AzureWorkQueue.from_settings(settings, actual_credential)
+    )
+    blobs = (
+        blob_factory(settings, actual_credential)
+        if blob_factory is not None
+        else AzureBlobStore(
+            settings.storage_account_name,
+            settings.uploads_container,
+            SystemClock(),
+            derived_container=settings.derived_container,
+            control_container=settings.control_container,
+            credential=actual_credential,
+        )
+    )
+    return ProductionDependencies(
+        application_repository=repository,
+        work_queue=queue,
+        blob_store=blobs,
+        chunk_search=chunk_search,
+        readiness_checks=readiness_checks,
+        credential=actual_credential,
+    )
 
 
 class _EmptyChunkSearch:
@@ -83,17 +192,45 @@ def create_app(
     document_service: DocumentService | None = None,
     deletion_service: DeletionService | None = None,
     *,
+    dependencies: ApplicationDependencies | None = None,
     enable_outbox_dispatcher: bool | None = None,
 ) -> FastAPI:
+    actual_settings = settings or Settings()
+    if dependencies is not None and any(
+        value is not None
+        for value in (
+            readiness_checks,
+            session_service,
+            upload_service,
+            outbox_dispatcher,
+            document_service,
+            deletion_service,
+        )
+    ):
+        raise ValueError("dependencies cannot be combined with individual service injection")
+    if actual_settings.app_mode == "production" and dependencies is None:
+        raise ValueError("production requires explicit ApplicationDependencies")
+    if (
+        actual_settings.app_mode == "production"
+        and dependencies is not None
+        and (
+            isinstance(dependencies.application_repository, MemoryApplicationRepository)
+            or isinstance(dependencies.work_queue, MemoryWorkQueue)
+        )
+    ):
+        raise ValueError("production dependencies must not use memory adapters")
     if (upload_service is None) != (outbox_dispatcher is None):
         raise ValueError(
             "upload_service and outbox_dispatcher must be injected together"
         )
     if (document_service is None) != (deletion_service is None):
         raise ValueError("document_service and deletion_service must be injected together")
-    actual_settings = settings or Settings()
     clock = SystemClock()
-    application_repository = MemoryApplicationRepository()
+    application_repository = (
+        dependencies.application_repository
+        if dependencies is not None
+        else MemoryApplicationRepository()
+    )
     actual_session_service = session_service or SessionService(
         application_repository.sessions,
         clock,
@@ -111,19 +248,27 @@ def create_app(
         raise ValueError(
             "custom session_service requires upload_service and outbox_dispatcher"
         )
-    queue = MemoryWorkQueue()
+    queue: ApplicationWorkQueue = (
+        dependencies.work_queue if dependencies is not None else MemoryWorkQueue()
+    )
     actual_dispatcher = outbox_dispatcher or OutboxDispatcher(documents, queue, clock)
     owned_blob_store: AzureBlobStore | None = None
     if upload_service is None:
-        owned_blob_store = AzureBlobStore(
-            actual_settings.storage_account_name,
-            actual_settings.uploads_container,
-            clock,
-        )
+        if dependencies is not None:
+            actual_blob_store: UploadBlobStore = dependencies.blob_store
+        else:
+            owned_blob_store = AzureBlobStore(
+                actual_settings.storage_account_name,
+                actual_settings.uploads_container,
+                clock,
+                derived_container=actual_settings.derived_container,
+                control_container=actual_settings.control_container,
+            )
+            actual_blob_store = owned_blob_store
         actual_upload_service = UploadService(
             actual_session_service,
             documents,
-            owned_blob_store,
+            actual_blob_store,
             actual_dispatcher,
             clock,
             queue,
@@ -135,7 +280,7 @@ def create_app(
         actual_deletion_service = DeletionService(
             documents,
             actual_upload_service.blobs,  # type: ignore[arg-type]
-            _EmptyChunkSearch(),
+            dependencies.chunk_search if dependencies is not None else _EmptyChunkSearch(),
         )
         actual_document_service = DocumentService(
             documents, actual_deletion_service, actual_dispatcher, clock
@@ -168,6 +313,8 @@ def create_app(
                     await task
             if owned_blob_store is not None:
                 await actual_upload_service.aclose()
+            if isinstance(dependencies, ProductionDependencies):
+                await dependencies.aclose()
 
     app = FastAPI(
         title="Content Understanding RAG Demo", version="0.1.0", lifespan=lifespan
@@ -181,6 +328,8 @@ def create_app(
     app.state.deletion_service = actual_deletion_service
     app.state.document_service = actual_document_service
 
+    if dependencies is not None:
+        readiness_checks = dependencies.readiness_checks
     if readiness_checks is None:
         if app.state.settings.app_mode == "production":
             readiness_checks = {name: _not_ready for name in PRODUCTION_READINESS_CHECKS}

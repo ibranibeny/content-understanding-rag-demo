@@ -166,6 +166,13 @@ class UploadService:
             raise AppError(
                 "invalid_document_state", 409, "The document cannot be completed in this state.", False
             )
+        if (
+            document.file_name is None
+            or document.content_type is None
+            or document.size_bytes is None
+            or document.blob_name is None
+        ):
+            raise RuntimeError("active document metadata is missing")
 
         declared = validate_declared_upload(
             document.file_name,
@@ -241,6 +248,8 @@ class UploadService:
 
     @staticmethod
     def _response(document: DocumentRecord) -> DocumentResponse:
+        if document.file_name is None:
+            raise RuntimeError("visible document metadata is missing")
         return DocumentResponse(
             document_id=document.document_id,
             file_name=document.file_name,

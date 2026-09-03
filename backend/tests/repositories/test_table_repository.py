@@ -328,6 +328,51 @@ async def test_storage_contains_only_primitives_and_no_sensitive_material(
     assert "rawcontent" not in persisted
 
 
+async def test_deleted_table_entity_contains_only_tombstone_metadata(
+    repository: tuple[TableApplicationRepository, FakeTableClient],
+) -> None:
+    repo, client = repository
+    live = document()
+    created = await repo.documents.create(live)
+    tombstone = live.model_copy(
+        update={
+            "state": DocumentState.DELETED,
+            "updated_at": NOW,
+            "file_name": None,
+            "content_type": None,
+            "size_bytes": None,
+            "blob_name": None,
+            "document_type": None,
+            "title": None,
+            "content_result_id": None,
+            "content_operation_url": None,
+            "extraction": None,
+            "markdown_blob_name": None,
+            "page_count": None,
+            "chunk_count": None,
+            "token_count": None,
+            "failure_code": None,
+            "failure_retryable": False,
+            "deleted_at": NOW,
+        }
+    )
+
+    await repo.documents.replace(tombstone, created.etag)
+
+    entity = client.entities[(f"session:{SESSION_KEY}", f"document:{DOCUMENT_ID}")]
+    persisted = str(entity)
+    for sensitive in (
+        "résumé.pdf",
+        "application/pdf",
+        f"uploads/{SESSION_KEY}/{DOCUMENT_ID}",
+        "Résumé",
+        "result-1",
+        "operations/1",
+        "retry_later",
+    ):
+        assert sensitive not in persisted
+
+
 async def test_client_ownership_controls_idempotent_close() -> None:
     injected = FakeTableClient()
     repository = TableApplicationRepository(injected)

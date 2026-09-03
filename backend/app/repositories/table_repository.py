@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from azure.core import MatchConditions
+from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ResourceExistsError, ResourceModifiedError, ResourceNotFoundError
 from azure.data.tables import UpdateMode
 from azure.data.tables.aio import TableClient
@@ -22,6 +23,7 @@ from app.domain.models import (
     SessionRecord,
     VersionedDocument,
 )
+from app.domain.protocols import DocumentRepository, SessionRepository
 
 CODEC_VERSION = 1
 SESSION_ROW_KEY = "session"
@@ -123,10 +125,16 @@ class TableApplicationRepository:
         self._client = client
         self._owns_client = owns_client
         self._closed = False
-        self.documents = TableDocumentRepository(client)
+        self.sessions: SessionRepository = self
+        self.documents: DocumentRepository = TableDocumentRepository(client)
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> TableApplicationRepository:
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        credential: AsyncTokenCredential | None = None,
+    ) -> TableApplicationRepository:
         if settings.azurite_table_connection_string:
             client = TableClient.from_connection_string(
                 settings.azurite_table_connection_string, settings.table_name
@@ -136,7 +144,7 @@ class TableApplicationRepository:
             client = TableClient(
                 endpoint=endpoint,
                 table_name=settings.table_name,
-                credential=DefaultAzureCredential(),
+                credential=credential or DefaultAzureCredential(),
             )
         return cls(cast(TableClientLike, client), owns_client=True)
 
