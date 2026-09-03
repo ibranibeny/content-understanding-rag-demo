@@ -570,6 +570,19 @@ git commit -m "feat: add secure direct document uploads"
 
 ### Task 5: Add Azure Table repositories and lease-fenced deletion
 
+**Azurite read-SAS blocker research (2026-09-03):** The remaining defect is isolated to
+`AzureBlobStore.create_read_url`: unlike `create_upload`, it bypasses the injected
+`BlobSasSigner` and directly requests a user-delegation key, which Azurite does not implement.
+The signer protocol already receives explicit permissions, exact blob identity, start, and expiry,
+so the narrow fix is to route reads through that existing protocol. Read grants must target the
+requested blob in the configured uploads container, grant only `read`, cap a later caller-requested
+expiry at the fixed 15-minute SAS lifetime, use `https,http` only with the injected local signer,
+and preserve HTTPS-only user delegation by default. Only `create_local_dependencies` parses an
+Azurite account key and injects `LocalBlobSasSigner`; the production dependency factory exposes no
+account-key or signer parameter. No SAS or key may enter logs or retained public state. This is one
+atomic Blob-adapter correction and focused regression suite; no modernization scenario skill root,
+Execution-stage file, or Breakdown Hints files were forwarded.
+
 **Execution research (2026-09-03):** The requested linked worktree is clean on
 `feature/content-understanding-rag-demo`, `uv sync --locked --offline` succeeds from the existing
 lockfile, and the complete backend baseline is 475 passing tests. Tasks 1-4 already provide frozen

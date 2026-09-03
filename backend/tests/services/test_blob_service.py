@@ -182,6 +182,85 @@ async def test_local_account_key_sas_never_requests_user_delegation_key() -> Non
     assert "local-account-key" not in repr(store)
 
 
+async def test_local_read_sas_uses_injected_signer_without_user_delegation() -> None:
+    captured: dict[str, Any] = {}
+
+    def sas_factory(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "sp=r&spr=https%2Chttp&sig=local-read"
+
+    class LocalBlob(BlobClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.url = "http://127.0.0.1:10000/devstoreaccount1/uploads/exact/file.pdf"
+
+    class LocalService(BlobService):
+        async def get_user_delegation_key(self, start: datetime, expiry: datetime) -> object:
+            del start, expiry
+            raise AssertionError("Azurite must not request user delegation")
+
+    client = LocalService(LocalBlob())
+    store = AzureBlobStore(
+        "devstoreaccount1",
+        "uploads",
+        Clock(),
+        service_client=client,
+        sas_factory=sas_factory,
+        sas_signer=LocalBlobSasSigner("local-account-key"),
+    )
+
+    url = await store.create_read_url("exact/file.pdf", NOW + timedelta(minutes=10))
+
+    assert client.requested == ("uploads", "exact/file.pdf")
+    assert captured["account_name"] == "devstoreaccount1"
+    assert captured["container_name"] == "uploads"
+    assert captured["blob_name"] == "exact/file.pdf"
+    assert captured["account_key"] == "local-account-key"
+    assert "user_delegation_key" not in captured
+    assert captured["start"] == NOW - timedelta(minutes=5)
+    assert captured["expiry"] == NOW + timedelta(minutes=10)
+    assert captured["protocol"] == "https,http"
+    permission = captured["permission"]
+    assert permission.read
+    assert not permission.add and not permission.create and not permission.write
+    assert not permission.delete and not permission.tag
+    assert str(permission) == "r"
+    assert url == (
+        "http://127.0.0.1:10000/devstoreaccount1/uploads/exact/file.pdf"
+        "?sp=r&spr=https%2Chttp&sig=local-read"
+    )
+    assert "local-account-key" not in repr(store)
+
+
+async def test_read_sas_bounds_later_requested_expiry_to_fifteen_minutes() -> None:
+    captured: dict[str, Any] = {}
+
+    def sas_factory(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "sp=r&spr=https&sig=delegated-read"
+
+    client = BlobService(BlobClient())
+    store = AzureBlobStore(
+        "acct", "uploads", Clock(), service_client=client, sas_factory=sas_factory
+    )
+
+    url = await store.create_read_url("path/file.pdf", NOW + timedelta(hours=1))
+
+    assert client.requested == ("uploads", "path/file.pdf")
+    assert client.key_times == (NOW - timedelta(minutes=5), NOW + timedelta(minutes=15))
+    assert captured["start"] == NOW - timedelta(minutes=5)
+    assert captured["expiry"] == NOW + timedelta(minutes=15)
+    assert captured["protocol"] == "https"
+    assert "account_key" not in captured
+    assert "user_delegation_key" in captured
+    permission = captured["permission"]
+    assert permission.read
+    assert not permission.add and not permission.create and not permission.write
+    assert not permission.delete and not permission.tag
+    assert str(permission) == "r"
+    assert url.endswith("?sp=r&spr=https&sig=delegated-read")
+
+
 async def test_verify_reads_bounded_header_for_non_office_blob() -> None:
     blob = BlobClient(b"%PDF-1.7" + b"x" * 100)
     store = AzureBlobStore("acct", "uploads", Clock(), service_client=BlobService(blob))

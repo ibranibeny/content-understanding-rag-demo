@@ -18,7 +18,7 @@ from app.main import (
 )
 from app.repositories.memory_repository import MemoryApplicationRepository, MemoryWorkQueue
 from app.repositories.table_repository import TableApplicationRepository
-from app.services.blob_service import AzureBlobStore
+from app.services.blob_service import AzureBlobStore, UserDelegationBlobSasSigner
 from app.services.queue_service import AzureWorkQueue
 
 
@@ -231,6 +231,9 @@ def test_production_helper_constructs_table_queue_and_three_container_blob_graph
     assert dependencies.blob_store._uploads_container == "incoming"
     assert dependencies.blob_store._derived_container == "outputs"
     assert dependencies.blob_store._control_container == "locks"
+    assert isinstance(
+        dependencies.blob_store._sas_signer, UserDelegationBlobSasSigner
+    )
 
     with TestClient(create_app(settings=settings, dependencies=dependencies)):
         pass

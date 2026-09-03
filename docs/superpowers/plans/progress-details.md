@@ -234,3 +234,24 @@
 - Green evidence: focused compliance tests `46 passed`; offline sync resolved 94 and checked 93
 	cached packages; Ruff passed; strict mypy reported no issues in 28 source files; full backend
 	pytest passed `556 tests`; editor diagnostics and `git diff --check` were clean.
+
+## 2026-09-03 — Task 5 Azurite read-SAS remediation
+
+- Root cause: `AzureBlobStore.create_read_url()` implemented user-delegation signing directly,
+	bypassing the already injected `BlobSasSigner`; local upload SAS worked with Azurite, but worker
+	read SAS attempted Azurite's unsupported `get_user_delegation_key` operation.
+- TDD red: focused Blob tests produced the expected two failures: local read signing called user
+	delegation, and a one-hour requested expiry was not capped to the fixed 15-minute SAS lifetime.
+- Implementation: read SAS now uses the same permission-aware signer seam as upload SAS and caps
+	the effective expiry to the earlier of the caller request and 15 minutes from the current clock.
+	Local injection therefore uses account-key signing with `https,http`; default/production signing
+	remains user delegation with HTTPS only. Both paths grant exactly `read` against the requested
+	upload-container blob. Production factory coverage verifies the user-delegation signer remains
+	the default and its public signature accepts no account key or local signer.
+- Secret handling: neither account key nor SAS is logged or retained in public state; regression
+	assertions confirm the key is absent from adapter representation.
+- Verification: focused signer/factory suite `44 passed`; offline sync resolved 94 and checked 93
+	cached packages; Ruff passed; strict mypy reported no issues in 28 source files; full backend
+	pytest passed `558 tests`; editor diagnostics and `git diff --check` were clean.
+- Decomposition: atomic Blob-adapter correction. No scenario skill root, Execution-stage file, or
+	Breakdown Hints files were forwarded.

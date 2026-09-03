@@ -335,18 +335,19 @@ class AzureBlobStore:
         )
 
     async def create_read_url(self, blob_name: str, expires_at: datetime) -> str:
-        start = self._clock.now() - SAS_CLOCK_SKEW
+        now = self._clock.now()
+        start = now - SAS_CLOCK_SKEW
+        expiry = min(expires_at, now + SAS_LIFETIME)
         client = self._client()
-        key = await client.get_user_delegation_key(start, expires_at)
-        sas = self._sas_factory(
+        sas = await self._sas_signer.sign(
+            client,
+            self._sas_factory,
             account_name=self._account_name,
             container_name=self._uploads_container,
             blob_name=blob_name,
-            user_delegation_key=key,
             permission=BlobSasPermissions(read=True),
             start=start,
-            expiry=expires_at,
-            protocol="https",
+            expiry=expiry,
         )
         blob = client.get_blob_client(self._uploads_container, blob_name)
         return f"{blob.url}?{sas}"
