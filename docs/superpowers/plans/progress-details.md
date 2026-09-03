@@ -23,3 +23,15 @@
 	passed; editor diagnostics reported no errors in the modified Python files.
 - Decomposition: atomic. The change is one shared contract rule plus parameterized boundary
 	coverage. No scenario skill root, Execution stage, or Breakdown Hints files were supplied.
+
+## 2026-09-03 — Task 2 UTC-offset contract remediation
+
+- Scope: added an aware `+07:00` mutation for all 17 timestamp fields across persistence,
+	queue, evidence, and API boundary models in `backend/tests/test_models.py`.
+- TDD red check: no RED occurred; all 17 new mutations were rejected by the existing shared
+	`UtcDateTime` validator, and the focused model suite passed with 92 tests. No production
+	correction was needed.
+- Final verification: Ruff passed; mypy reported no issues in 11 source files; the full backend
+	suite passed with 122 tests; editor diagnostics reported no errors; `git diff --check` passed.
+- Decomposition: atomic. This was one parameterized contract-test addition. No scenario skill
+	root, Execution stage, or Breakdown Hints files were supplied.

@@ -27,6 +27,7 @@ from app.domain.models import (
 
 NOW = datetime(2026, 9, 3, 10, 0, tzinfo=UTC)
 NAIVE_NOW = datetime.fromisoformat("2026-09-03T10:00:00")
+AWARE_PLUS_SEVEN = datetime.fromisoformat("2026-09-03T17:00:00+07:00")
 DOCUMENT_ID = UUID("9f4b8484-9f6b-44f2-b4d4-e5e7687c80df")
 CORRELATION_ID = UUID("868fba2c-1695-42d4-af7f-79069e434b34")
 
@@ -556,6 +557,39 @@ def test_every_datetime_boundary_rejects_naive_values(
     field: str,
     invalid_value: object,
 ) -> None:
+    with pytest.raises(ValidationError):
+        model_type.model_validate(factory(**{field: invalid_value}))
+
+
+@pytest.mark.parametrize(
+    ("model_type", "factory", "field"),
+    [
+        (SessionRecord, session_record, "createdAt"),
+        (SessionRecord, session_record, "expiresAt"),
+        (SessionRecord, session_record, "questionTimestamps"),
+        (DocumentRecord, document_record, "createdAt"),
+        (DocumentRecord, document_record, "updatedAt"),
+        (DocumentRecord, document_record, "expiresAt"),
+        (DocumentRecord, document_record, "deletedAt"),
+        (IngestionMessage, ingestion_message, "enqueuedAt"),
+        (ContentResultCleanupMessage, cleanup_message, "enqueuedAt"),
+        (OutboxRecord, outbox_record, "createdAt"),
+        (OutboxRecord, outbox_record, "sentAt"),
+        (DocumentChunk, document_chunk, "expiresAt"),
+        (SessionResponse, session_response, "expiresAt"),
+        (UploadInitResponse, upload_init_response, "expiresAt"),
+        (DocumentResponse, document_response, "createdAt"),
+        (DocumentResponse, document_response, "updatedAt"),
+        (DocumentResponse, document_response, "expiresAt"),
+    ],
+)
+def test_every_datetime_boundary_rejects_aware_non_utc_values(
+    model_type: type[BaseModel], factory: ModelFactory, field: str
+) -> None:
+    invalid_value: object = (
+        [AWARE_PLUS_SEVEN] if field == "questionTimestamps" else AWARE_PLUS_SEVEN
+    )
+
     with pytest.raises(ValidationError):
         model_type.model_validate(factory(**{field: invalid_value}))
 
