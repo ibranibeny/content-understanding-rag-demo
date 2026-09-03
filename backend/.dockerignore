@@ -9,5 +9,4 @@ htmlcov/
 tests/
 .env
 .env.*
-Dockerfile
 .dockerignore

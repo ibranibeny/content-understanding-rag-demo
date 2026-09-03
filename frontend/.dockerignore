@@ -5,5 +5,4 @@ test-results/
 playwright-report/
 .env
 .env.*
-Dockerfile
 .dockerignore
