@@ -51,6 +51,9 @@ def test_frontend_is_multistage_nonroot_nginx() -> None:
 def test_nginx_proxies_api_with_sse_buffering_disabled() -> None:
     assert "location /api/" in NGINX_TEMPLATE
     assert "proxy_pass ${API_UPSTREAM}" in NGINX_TEMPLATE
+    assert "proxy_ssl_server_name on" in NGINX_TEMPLATE
+    assert "proxy_set_header Host $proxy_host" in NGINX_TEMPLATE
+    assert "proxy_set_header Host $host" not in NGINX_TEMPLATE
     assert "proxy_buffering off" in NGINX_TEMPLATE
     assert 'X-Accel-Buffering "no"' in NGINX_TEMPLATE
 

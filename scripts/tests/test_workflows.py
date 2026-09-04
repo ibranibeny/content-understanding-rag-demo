@@ -176,6 +176,9 @@ def test_deploy_runs_bootstrap_and_smoke_via_backend_uv() -> None:
     assert "uv sync" in text, "deploy must sync the backend (enterprise index from pyproject)"
     assert "scripts/bootstrap-data-plane.py" in text, "deploy must bootstrap the data plane"
     assert "scripts/smoke_test.py" in text, "deploy must run the deployed smoke test"
+    assert '--api-base "$FRONTEND_URL"' in text, (
+        "the release smoke must exercise the public frontend /api proxy"
+    )
 
 
 # --- Supporting delivery configuration ---------------------------------------
