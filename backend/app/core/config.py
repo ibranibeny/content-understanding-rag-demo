@@ -174,7 +174,7 @@ class Settings(BaseSettings):
         default="https://demo.services.ai.azure.com", validation_alias="FOUNDRY_ENDPOINT"
     )
     analyzer_router_id: str = Field(
-        default="business-document-router", validation_alias="ANALYZER_ROUTER_ID"
+        default="business_document_router", validation_alias="ANALYZER_ROUTER_ID"
     )
     chat_deployment: str = Field(default="gpt-5", validation_alias="CHAT_DEPLOYMENT")
     embedding_deployment: str = Field(

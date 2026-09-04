@@ -205,7 +205,7 @@ if [[ "$skip_bootstrap" != "true" ]]; then
   SEARCH_INDEX_NAME="$(require_env SEARCH_INDEX_NAME)" \
   CHAT_DEPLOYMENT="$(require_env CHAT_DEPLOYMENT)" \
   EMBEDDING_DEPLOYMENT="$(require_env EMBEDDING_DEPLOYMENT)" \
-  ANALYZER_ROUTER_ID="business-document-router" \
+  ANALYZER_ROUTER_ID="business_document_router" \
     uv --project backend run python scripts/bootstrap-data-plane.py
 fi
 

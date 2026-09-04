@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ANALYZERS_DIR = REPO_ROOT / "analyzers"
-DEFAULT_ROUTER_ID = "business-document-router"
+DEFAULT_ROUTER_ID = "business_document_router"
 DEFAULT_INDEX_NAME = "document-chunks"
 DEFAULT_CHAT_DEPLOYMENT = "gpt-5"
 DEFAULT_EMBEDDING_DEPLOYMENT = "text-embedding-3-large"
@@ -32,6 +32,8 @@ class AnalyzerWriter(Protocol):
     async def create_or_replace_analyzer(
         self, analyzer_id: str, definition: Mapping[str, Any]
     ) -> str | None: ...
+
+    async def wait_for_analyzer(self, operation_url: str) -> None: ...
 
     async def update_defaults(self, model_deployments: Mapping[str, str]) -> None: ...
 
@@ -86,7 +88,13 @@ def build_defaults(chat_deployment: str, embedding_deployment: str) -> dict[str,
     This deployment names each model deployment after its base model, so keys and values coincide
     (for example ``gpt-5`` -> ``gpt-5``). The mapping shape matches the 2025-11-01 ``defaults`` API.
     """
-    return {chat_deployment: chat_deployment, embedding_deployment: embedding_deployment}
+    return {
+        chat_deployment: chat_deployment,
+        embedding_deployment: embedding_deployment,
+        "prebuilt-analyzer-completion": chat_deployment,
+        "prebuilt-analyzer-completion-mini": chat_deployment,
+        "prebuilt-analyzer-embedding": embedding_deployment,
+    }
 
 
 async def bootstrap(
@@ -100,15 +108,19 @@ async def bootstrap(
     """Apply analyzers, optional defaults, and the search index. Idempotent: safe to re-run."""
     created: list[str] = []
     router_id = ""
-    for item in definitions:
-        await analyzer_writer.create_or_replace_analyzer(item.analyzer_id, item.definition)
-        created.append(item.analyzer_id)
-        if item.is_router:
-            router_id = item.analyzer_id
     defaults_configured = False
     if defaults:
         await analyzer_writer.update_defaults(defaults)
         defaults_configured = True
+    for item in definitions:
+        operation = await analyzer_writer.create_or_replace_analyzer(
+            item.analyzer_id, item.definition
+        )
+        if operation is not None:
+            await analyzer_writer.wait_for_analyzer(operation)
+        created.append(item.analyzer_id)
+        if item.is_router:
+            router_id = item.analyzer_id
     await index_ensurer.create_or_update_index()
     return BootstrapReport(
         analyzer_ids=tuple(created),

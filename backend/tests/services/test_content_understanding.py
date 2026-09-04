@@ -49,14 +49,14 @@ def assert_token_only(request: httpx.Request, token: str = "token-1") -> None:
 async def test_start_analysis_uses_exact_path_body_version_and_returns_persistable_ids() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"
-        assert request.url.path == "/contentunderstanding/analyzers/business-document-router:analyze"
+        assert request.url.path == "/contentunderstanding/analyzers/business_document_router:analyze"
         assert dict(request.url.params) == {"api-version": API_VERSION}
         assert request.read() == b'{"inputs":[{"url":"https://blob.example/file.pdf?sig=secret"}]}'
         assert_token_only(request)
         return httpx.Response(202, headers={"Operation-Location": OPERATION}, json={"id": "result-1", "status": "NotStarted"})
 
     service, credential, http = client(handler)
-    started = await service.start_analysis("https://blob.example/file.pdf?sig=secret", "business-document-router")
+    started = await service.start_analysis("https://blob.example/file.pdf?sig=secret", "business_document_router")
 
     assert started.result_id == "result-1"
     assert started.operation_url == OPERATION
@@ -212,11 +212,11 @@ async def test_create_analyzer_and_update_defaults_use_exact_methods() -> None:
         return httpx.Response(201 if request.method == "PUT" else 200, json={})
 
     service, _, http = client(handler)
-    await service.create_or_replace_analyzer("workshop-invoice", {"baseAnalyzerId": "prebuilt-document"})
+    await service.create_or_replace_analyzer("workshop_invoice", {"baseAnalyzerId": "prebuilt-document"})
     await service.update_defaults({"gpt-5": "gpt-5", "text-embedding-3-large": "text-embedding-3-large"})
 
     assert [(r.method, r.url.path, dict(r.url.params)) for r in requests] == [
-        ("PUT", "/contentunderstanding/analyzers/workshop-invoice", {"api-version": API_VERSION, "allowReplace": "true"}),
+        ("PUT", "/contentunderstanding/analyzers/workshop_invoice", {"api-version": API_VERSION, "allowReplace": "true"}),
         ("PATCH", "/contentunderstanding/defaults", {"api-version": API_VERSION}),
     ]
     assert requests[1].headers["Content-Type"] == "application/merge-patch+json"
@@ -255,11 +255,39 @@ async def test_create_analyzer_filters_every_checked_in_definition_to_ga_propert
 
 
 async def test_create_analyzer_accepts_only_trusted_creation_operation_location() -> None:
-    operation = f"{ENDPOINT}/contentunderstanding/analyzers/workshop-invoice/operations/create-1?api-version={API_VERSION}"
+    operation = f"{ENDPOINT}/contentunderstanding/analyzers/workshop_invoice/operations/create-1?api-version={API_VERSION}"
     service, _, http = client(
         lambda request: httpx.Response(201, headers={"Operation-Location": operation}, json={})
     )
-    assert await service.create_or_replace_analyzer("workshop-invoice", {}) == operation
+    assert await service.create_or_replace_analyzer("workshop_invoice", {}) == operation
+    await http.aclose()
+
+
+async def test_analyzer_identifiers_follow_ga_service_pattern() -> None:
+    service, _, http = client(lambda request: httpx.Response(201))
+
+    with pytest.raises(ContentUnderstandingError) as caught:
+        await service.create_or_replace_analyzer("workshop-invoice", {})
+
+    assert caught.value.code == "content_understanding_invalid_identifier"
+    await http.aclose()
+
+
+async def test_wait_for_analyzer_polls_until_ready() -> None:
+    operation = (
+        f"{ENDPOINT}/contentunderstanding/analyzers/workshop_invoice/operations/create-1"
+        f"?api-version={API_VERSION}"
+    )
+    responses = iter(
+        [
+            httpx.Response(200, json={"status": "running"}),
+            httpx.Response(200, json={"status": "succeeded"}),
+        ]
+    )
+    service, _, http = client(lambda request: next(responses))
+
+    await service.wait_for_analyzer(operation, poll_interval=0)
+
     await http.aclose()
 
 

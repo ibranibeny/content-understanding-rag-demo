@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -14,6 +16,7 @@ TOKEN_SCOPE = "https://cognitiveservices.azure.com/.default"
 ANALYZER_DEFINITION_PROPERTIES = frozenset(
     {"baseAnalyzerId", "description", "config", "fieldSchema", "models"}
 )
+ANALYZER_ID_PATTERN = re.compile(r"[A-Za-z0-9._]{1,64}")
 
 
 class AsyncTokenCredential(Protocol):
@@ -110,7 +113,7 @@ class ContentUnderstandingClient:
         }
         response = await self._request(
             "PUT",
-            f"/contentunderstanding/analyzers/{quote(self._identifier(analyzer_id), safe='')}",
+            f"/contentunderstanding/analyzers/{quote(self._analyzer_identifier(analyzer_id), safe='')}",
             params={"api-version": API_VERSION, "allowReplace": "true"},
             json=request_body,
             expected={200, 201},
@@ -119,6 +122,30 @@ class ContentUnderstandingClient:
         if operation is not None:
             self._validate_operation_url(operation, analyzer_operation=True)
         return str(operation) if operation is not None else None
+
+    async def wait_for_analyzer(
+        self,
+        operation_url: str,
+        *,
+        poll_interval: float = 1.0,
+        max_attempts: int = 120,
+    ) -> None:
+        self._validate_operation_url(operation_url, analyzer_operation=True)
+        for attempt in range(max_attempts):
+            response = await self._request("GET", operation_url, expected={200})
+            status = self._json_object(response).get("status")
+            normalized = status.casefold() if isinstance(status, str) else ""
+            if normalized == "succeeded":
+                return
+            if normalized not in {"notstarted", "running"}:
+                raise ContentUnderstandingError(
+                    "content_understanding_failed", retryable=False
+                )
+            if attempt + 1 < max_attempts:
+                await asyncio.sleep(poll_interval)
+        raise ContentUnderstandingError(
+            "content_understanding_unavailable", retryable=True
+        )
 
     async def update_defaults(self, model_deployments: Mapping[str, str]) -> None:
         await self._request(
@@ -133,7 +160,7 @@ class ContentUnderstandingClient:
     async def start_analysis(self, blob_url: str, analyzer_id: str) -> AnalysisStart:
         response = await self._request(
             "POST",
-            f"/contentunderstanding/analyzers/{quote(self._identifier(analyzer_id), safe='')}:analyze",
+            f"/contentunderstanding/analyzers/{quote(self._analyzer_identifier(analyzer_id), safe='')}:analyze",
             params={"api-version": API_VERSION},
             json={"inputs": [{"url": blob_url}]},
             expected={202},
@@ -239,6 +266,8 @@ class ContentUnderstandingClient:
                 and segments[1:3] == ["contentunderstanding", "analyzers"]
                 and segments[4] == "operations"
             )
+            if valid:
+                self._analyzer_identifier(segments[3])
             identifier = segments[-1] if valid else ""
         else:
             valid = len(segments) == 4 and segments[1:3] == ["contentunderstanding", "analyzerResults"]
@@ -251,6 +280,14 @@ class ContentUnderstandingClient:
     def _identifier(value: str) -> str:
         if not value or len(value) > 128 or any(not (c.isalnum() or c in "._-") for c in value):
             raise ContentUnderstandingError("content_understanding_invalid_identifier", retryable=False)
+        return value
+
+    @staticmethod
+    def _analyzer_identifier(value: str) -> str:
+        if ANALYZER_ID_PATTERN.fullmatch(value) is None:
+            raise ContentUnderstandingError(
+                "content_understanding_invalid_identifier", retryable=False
+            )
         return value
 
     @staticmethod

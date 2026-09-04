@@ -1,8 +1,12 @@
 {
-  "analyzerId": "workshop-contract",
+  "analyzerId": "workshop_contract",
   "name": "Contract",
   "description": "Extracts parties, dates, terms, obligations, termination, and risks from a contract.",
   "baseAnalyzerId": "prebuilt-document",
+  "models": {
+    "completion": "gpt-5",
+    "embedding": "text-embedding-3-large"
+  },
   "dynamicFieldSchema": false,
   "config": {
     "returnDetails": true,
