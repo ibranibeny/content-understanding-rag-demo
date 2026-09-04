@@ -10,6 +10,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar, cast
 
+from azure.core.exceptions import (
+    HttpResponseError,
+    ServiceRequestError,
+    ServiceResponseError,
+)
 from azure.data.tables.aio import TableClient
 from azure.identity.aio import DefaultAzureCredential
 from azure.storage.blob.aio import BlobServiceClient
@@ -17,7 +22,11 @@ from azure.storage.queue.aio import QueueClient
 from pydantic import BaseModel
 
 from app.core.config import Settings
-from app.core.errors import ConcurrencyConflict, TransientArtifactError
+from app.core.errors import (
+    ConcurrencyConflict,
+    RepositoryUnavailableError,
+    TransientArtifactError,
+)
 from app.core.telemetry import configure_telemetry
 from app.domain.models import (
     ContentResultCleanupMessage,
@@ -67,10 +76,26 @@ def parse_cleanup_message(content: str) -> ContentResultCleanupMessage:
     return ContentResultCleanupMessage.model_validate_json(content)
 
 
+RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
+
+
 def _safe_failure(error: Exception) -> tuple[str, bool, float | None]:
     if isinstance(error, (ContentUnderstandingError, EmbeddingError)):
         return error.code, error.retryable, error.retry_after
-    if isinstance(error, (TransientArtifactError, DocumentLeaseBusy, DocumentLeaseLost)):
+    if isinstance(
+        error,
+        (
+            TransientArtifactError,
+            DocumentLeaseBusy,
+            DocumentLeaseLost,
+            RepositoryUnavailableError,
+            ServiceRequestError,
+            ServiceResponseError,
+            TimeoutError,
+        ),
+    ):
+        return "dependency_unavailable", True, None
+    if isinstance(error, HttpResponseError) and error.status_code in RETRYABLE_HTTP_STATUS:
         return "dependency_unavailable", True, None
     return "ingestion_failed", False, None
 
@@ -111,6 +136,10 @@ class QueuePump[M: BaseModel]:
             await self._stop_renewal(stopped, renewal)
             attempts = int(raw.dequeue_count or 1)
             code, retryable, retry_after = _safe_failure(error)
+            LOGGER.warning(
+                "queue handler failed: error_type=%s code=%s retryable=%s attempts=%s",
+                type(error).__name__, code, retryable, attempts,
+            )
             if self._retry_forever:
                 delay = int(retry_delay(attempts, retry_after, cap=3600))
                 await self._update_message(raw, max(1, delay), operation_lock)
