@@ -157,12 +157,20 @@ class ContentUnderstandingClient:
             expected={200},
         )
 
-    async def start_analysis(self, blob_url: str, analyzer_id: str) -> AnalysisStart:
+    async def start_analysis(
+        self,
+        blob_url: str,
+        analyzer_id: str,
+        content_range: str | None = None,
+    ) -> AnalysisStart:
+        input_value = {"url": blob_url}
+        if content_range is not None:
+            input_value["contentRange"] = content_range
         response = await self._request(
             "POST",
             f"/contentunderstanding/analyzers/{quote(self._analyzer_identifier(analyzer_id), safe='')}:analyze",
             params={"api-version": API_VERSION},
-            json={"inputs": [{"url": blob_url}]},
+            json={"inputs": [input_value]},
             expected={202},
         )
         operation_url = response.headers.get("Operation-Location")

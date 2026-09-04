@@ -159,7 +159,12 @@ class DocumentLeaseContext(Protocol):
 
 
 class ContentUnderstandingClient(Protocol):
-    async def start_analysis(self, blob_url: str, analyzer_id: str) -> tuple[str, str]: ...
+    async def start_analysis(
+        self,
+        blob_url: str,
+        analyzer_id: str,
+        content_range: str | None = None,
+    ) -> tuple[str, str]: ...
 
     async def get_result(self, operation_url: str) -> Mapping[str, JsonValue]: ...
 

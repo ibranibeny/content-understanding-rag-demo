@@ -174,6 +174,7 @@ class DeletionService:
                 "updated_at": now,
                 "file_name": None,
                 "content_type": None,
+                "content_range": None,
                 "size_bytes": None,
                 "blob_name": None,
                 "document_type": None,

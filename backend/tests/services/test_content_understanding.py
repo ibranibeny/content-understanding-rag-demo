@@ -67,6 +67,25 @@ async def test_start_analysis_uses_exact_path_body_version_and_returns_persistab
     await http.aclose()
 
 
+async def test_start_analysis_sends_exact_content_range_in_input() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.read() == (
+            b'{"inputs":[{"url":"https://blob.example/file.pdf?sig=secret",'
+            b'"contentRange":"1-3,5"}]}'
+        )
+        return httpx.Response(202, headers={"Operation-Location": OPERATION})
+
+    service, _, http = client(handler)
+
+    await service.start_analysis(
+        "https://blob.example/file.pdf?sig=secret",
+        "business_document_router",
+        "1-3,5",
+    )
+
+    await http.aclose()
+
+
 async def test_start_analysis_accepts_header_only_202_response() -> None:
     service, _, http = client(
         lambda request: httpx.Response(202, headers={"Operation-Location": OPERATION})

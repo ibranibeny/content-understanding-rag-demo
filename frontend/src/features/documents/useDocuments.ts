@@ -42,10 +42,10 @@ export function useDocuments(cancelChat: () => void) {
     return () => { live = false; };
   }, [selectedId, documents]);
 
-  async function upload(file: File) {
+  async function upload(file: File, contentRange?: string) {
     setUploading(true); setProgress(0); setError(undefined);
     try {
-      const initialized = await api.initUpload(file);
+      const initialized = await api.initUpload(file, contentRange);
       const etag = await uploadBlob(file, initialized, setProgress);
       const completed = await api.completeUpload(initialized.documentId, etag);
       setSelectedId(completed.documentId);

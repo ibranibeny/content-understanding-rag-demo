@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -39,6 +40,10 @@ SAMPLE_LINES: tuple[str, ...] = (
     "The board approved a dividend of 0.35 USD per share.",
 )
 SAMPLE_QUESTION = "What was Contoso's total revenue for Q3 2026?"
+RANGE_SAMPLE_QUESTION = "What unique marker is printed on page 2?"
+RANGE_SAMPLE_EXPECTED = "ORBIT-BRAVO-2"
+MAX_CONTENT_PAGES = 300
+MAX_NUMERAL_DIGITS = 100
 
 
 class SmokeError(RuntimeError):
@@ -53,6 +58,8 @@ class SmokeConfig:
     content_type: str = "application/pdf"
     question: str = SAMPLE_QUESTION
     expect_substring: str | None = None
+    content_range: str | None = None
+    expected_page_count: int | None = None
     skip_live_model: bool = False
     ready_timeout: float = 300.0
     poll_interval: float = 5.0
@@ -64,33 +71,65 @@ class SmokeResult:
     final_state: str
     citation_count: int
     answer: str
+    citation_page_numbers: tuple[int, ...]
     deleted: bool
 
 
-def make_sample_pdf(lines: Sequence[str]) -> bytes:
-    """Build a minimal, valid, text-bearing single-page PDF with a correct cross-reference table."""
+def make_sample_pdf(lines: Sequence[str], page_count: int = 1) -> bytes:
+    """Build a valid text-bearing PDF with the requested pages and a correct xref table."""
+    if page_count < 1:
+        raise ValueError("page_count must be at least 1")
 
     def escape(value: str) -> str:
         return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
-    ops = ["BT", "/F1 12 Tf", "72 720 Td", "14 TL"]
-    for index, line in enumerate(lines):
-        if index:
-            ops.append("T*")
-        ops.append(f"({escape(line)}) Tj")
-    ops.append("ET")
-    stream = "\n".join(ops).encode("ascii")
+    marker_names = ("ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO")
 
+    def page_stream(page_index: int) -> bytes:
+        page_lines = [
+            *lines,
+            (
+                f"Page {page_index} unique marker: "
+                f"ORBIT-{marker_names[(page_index - 1) % len(marker_names)]}-{page_index}"
+            ),
+        ]
+        ops = ["BT", "/F1 12 Tf", "72 720 Td", "14 TL"]
+        for index, line in enumerate(page_lines):
+            if index:
+                ops.append("T*")
+            ops.append(f"({escape(line)}) Tj")
+        ops.append("ET")
+        return "\n".join(ops).encode("ascii")
+
+    page_numbers = [4 + index * 2 for index in range(page_count)]
     bodies: list[bytes] = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+            b"<< /Type /Pages /Kids ["
+            + b" ".join(f"{number} 0 R".encode("ascii") for number in page_numbers)
+            + f"] /Count {page_count} >>".encode("ascii")
         ),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
     ]
+    for page_index, page_number in enumerate(page_numbers, start=1):
+        content_number = page_number + 1
+        stream = page_stream(page_index)
+        bodies.extend(
+            [
+                (
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                    b"/Resources << /Font << /F1 3 0 R >> >> /Contents "
+                    + f"{content_number} 0 R >>".encode("ascii")
+                ),
+                (
+                    b"<< /Length "
+                    + str(len(stream)).encode("ascii")
+                    + b" >>\nstream\n"
+                    + stream
+                    + b"\nendstream"
+                ),
+            ]
+        )
     out = bytearray(b"%PDF-1.4\n")
     offsets: list[int] = []
     for number, body in enumerate(bodies, start=1):
@@ -154,55 +193,83 @@ def run_smoke(
 
     _require(client.get("/api/session"), 200, "session")
 
+    init_payload: dict[str, str | int] = {
+        "fileName": config.file_name,
+        "contentType": config.content_type,
+        "sizeBytes": len(pdf_bytes),
+    }
+    if config.content_range is not None:
+        init_payload["contentRange"] = config.content_range
     init = client.post(
         "/api/uploads/init",
         headers=origin,
-        json={
-            "fileName": config.file_name,
-            "contentType": config.content_type,
-            "sizeBytes": len(pdf_bytes),
-        },
+        json=init_payload,
     )
     _require(init, 200, "upload init")
     init_body = init.json()
     document_id = init_body.get("documentId")
-    upload_url = init_body.get("uploadUrl")
-    if not document_id or not upload_url:
-        raise SmokeError("upload init response is missing documentId or uploadUrl")
-    required_headers = dict(init_body.get("requiredHeaders") or {})
+    if not isinstance(document_id, str) or not document_id:
+        raise SmokeError("upload init response is missing or has malformed documentId")
+    state = ""
+    citation_count = 0
+    answer = ""
+    citation_pages: tuple[int, ...] = ()
+    deleted = False
+    try:
+        upload_url = init_body.get("uploadUrl")
+        if not isinstance(upload_url, str) or not upload_url:
+            raise SmokeError("upload init response has missing uploadUrl or malformed uploadUrl")
+        required_headers_value = init_body.get("requiredHeaders")
+        if not isinstance(required_headers_value, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in required_headers_value.items()
+        ):
+            raise SmokeError("upload init response has malformed requiredHeaders")
+        required_headers = dict(required_headers_value)
+        put = client.put(
+            upload_url,
+            content=pdf_bytes,
+            headers={**required_headers, "Content-Type": config.content_type},
+        )
+        if put.status_code not in (200, 201):
+            raise SmokeError(f"direct SAS blob upload failed: HTTP {put.status_code}")
+        etag = put.headers.get("ETag") or put.headers.get("etag")
+        if not etag:
+            raise SmokeError("direct SAS blob upload did not return an ETag")
 
-    put = client.put(
-        upload_url,
-        content=pdf_bytes,
-        headers={**required_headers, "Content-Type": config.content_type},
+        complete = client.post(
+            f"/api/uploads/{document_id}/complete", headers=origin, json={"etag": etag}
+        )
+        _require(complete, 200, "upload complete")
+        state = str(complete.json().get("state", ""))
+
+        if not config.skip_live_model:
+            state = _poll_until_ready(
+                client, document_id, config, sleep=sleep, monotonic=monotonic
+            )
+            citation_count, answer, citation_pages = _ask_grounded_question(
+                client, document_id, config, origin
+            )
+            if citation_count < 1:
+                raise SmokeError("the grounded answer contained no citations")
+            if INSUFFICIENT_EVIDENCE in answer.lower():
+                raise SmokeError("the model reported insufficient evidence for a known question")
+            if config.expect_substring and config.expect_substring.lower() not in answer.lower():
+                raise SmokeError(
+                    f"expected substring not found in answer: {config.expect_substring!r}"
+                )
+            _validate_citation_pages(citation_pages, config.content_range)
+    finally:
+        has_original_error = sys.exc_info()[0] is not None
+        try:
+            deleted = _delete_document(client, document_id, origin)
+        except Exception:
+            if not has_original_error:
+                raise
+
+    return SmokeResult(
+        document_id, state, citation_count, answer, citation_pages, deleted
     )
-    if put.status_code not in (200, 201):
-        raise SmokeError(f"direct SAS blob upload failed: HTTP {put.status_code}")
-    etag = put.headers.get("ETag") or put.headers.get("etag")
-    if not etag:
-        raise SmokeError("direct SAS blob upload did not return an ETag")
-
-    complete = client.post(
-        f"/api/uploads/{document_id}/complete", headers=origin, json={"etag": etag}
-    )
-    _require(complete, 200, "upload complete")
-    state = str(complete.json().get("state", ""))
-
-    if config.skip_live_model:
-        deleted = _delete_document(client, document_id, origin)
-        return SmokeResult(str(document_id), state, 0, "", deleted)
-
-    state = _poll_until_ready(client, str(document_id), config, sleep=sleep, monotonic=monotonic)
-    citation_count, answer = _ask_grounded_question(client, str(document_id), config, origin)
-    if citation_count < 1:
-        raise SmokeError("the grounded answer contained no citations")
-    if INSUFFICIENT_EVIDENCE in answer.lower():
-        raise SmokeError("the model reported insufficient evidence for a known question")
-    if config.expect_substring and config.expect_substring.lower() not in answer.lower():
-        raise SmokeError(f"expected substring not found in answer: {config.expect_substring!r}")
-
-    deleted = _delete_document(client, str(document_id), origin)
-    return SmokeResult(str(document_id), state, citation_count, answer, deleted)
 
 
 def _poll_until_ready(
@@ -218,8 +285,16 @@ def _poll_until_ready(
     while True:
         response = client.get(f"/api/documents/{document_id}")
         _require(response, 200, "document status")
-        last_state = str(response.json().get("state", "unknown"))
+        body = response.json()
+        last_state = str(body.get("state", "unknown"))
         if last_state == "ready":
+            if config.expected_page_count is not None:
+                actual_page_count = body.get("pageCount")
+                if actual_page_count != config.expected_page_count:
+                    raise SmokeError(
+                        f"expected {config.expected_page_count} processed pages, "
+                        f"got {actual_page_count!r}"
+                    )
             return last_state
         if last_state in {"failed", "deleting", "deleted"}:
             raise SmokeError(f"document reached terminal state {last_state!r} before ready")
@@ -236,9 +311,10 @@ def _ask_grounded_question(
     document_id: str,
     config: SmokeConfig,
     origin: dict[str, str],
-) -> tuple[int, str]:
+) -> tuple[int, str, tuple[int, ...]]:
     citations = 0
     tokens: list[str] = []
+    citation_pages: list[int] = []
     with client.stream(
         "POST",
         "/api/chat/stream",
@@ -250,11 +326,30 @@ def _ask_grounded_question(
         for event, data in parse_sse(response.iter_lines()):
             if event == "citation":
                 citations += 1
+                citation = data.get("citation")
+                if isinstance(citation, dict):
+                    locator = str(citation.get("sourceLocator", ""))
+                    page_match = re.search(r"(?i)\bpage[- ]([0-9]+)\b", locator)
+                    if page_match is not None:
+                        citation_pages.append(int(page_match.group(1)))
             elif event == "token":
                 tokens.append(str(data.get("text", "")))
             elif event == "error":
                 raise SmokeError(f"chat stream returned an error event: {data.get('code')}")
-    return citations, "".join(tokens)
+    return citations, "".join(tokens), tuple(citation_pages)
+
+
+def _validate_citation_pages(
+    citation_pages: tuple[int, ...], content_range: str | None
+) -> None:
+    if content_range is None:
+        return
+    intervals, _ = _parse_content_range(content_range)
+    if not citation_pages:
+        raise SmokeError("ranged answer citation has no page number in sourceLocator")
+    for page in citation_pages:
+        if not any(start <= page <= end for start, end in intervals):
+            raise SmokeError(f"citation page {page} is outside selected range {content_range!r}")
 
 
 def _delete_document(client: httpx.Client, document_id: str, origin: dict[str, str]) -> bool:
@@ -279,6 +374,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--file", default=None, help="Optional path to a supplied document to upload")
     parser.add_argument("--question", default=None, help="Grounded question to ask")
     parser.add_argument("--expect", default=None, help="Optional substring the answer must contain")
+    parser.add_argument("--content-range", default=None, help="PDF page range to process, for example 2-3")
+    parser.add_argument("--expect-pages", type=int, default=None, help="Expected processed page count")
+    parser.add_argument("--generated-pages", type=int, default=1, help="Pages in the generated sample PDF")
     parser.add_argument("--timeout", type=float, default=300.0, help="Readiness timeout in seconds")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Readiness poll interval")
     parser.add_argument(
@@ -289,8 +387,70 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _validate_page_options(args: argparse.Namespace, file_name: str | None) -> str | None:
+    if args.generated_pages < 1:
+        return "--generated-pages must be at least 1"
+    if args.expect_pages is not None and args.expect_pages < 1:
+        return "--expect-pages must be at least 1"
+    if args.content_range is not None:
+        try:
+            intervals, selected_count = _parse_content_range(args.content_range)
+        except ValueError as exc:
+            return str(exc)
+        if file_name is None and max(end for _start, end in intervals) > args.generated_pages:
+            return "--content-range cannot exceed --generated-pages"
+        if args.expect_pages is not None and args.expect_pages != selected_count:
+            return "--expect-pages must equal the number of pages in --content-range"
+    elif file_name is None and args.expect_pages is not None and args.expect_pages > args.generated_pages:
+        return "--expect-pages cannot exceed --generated-pages"
+    if (
+        file_name is not None
+        and Path(file_name).suffix.lower() != ".pdf"
+        and (
+            args.content_range is not None
+            or args.expect_pages is not None
+            or args.generated_pages != 1
+        )
+    ):
+        return "page range, count, and generation options require a PDF supplied file"
+    return None
+
+
+def _parse_content_range(content_range: str) -> tuple[list[tuple[int, int]], int]:
+    intervals: list[tuple[int, int]] = []
+    selected_count = 0
+    token_pattern = re.compile(
+        rf"([1-9][0-9]{{0,{MAX_NUMERAL_DIGITS - 1}}})"
+        rf"(?:-([1-9][0-9]{{0,{MAX_NUMERAL_DIGITS - 1}}}))?"
+    )
+    for token in content_range.split(","):
+        match = token_pattern.fullmatch(token)
+        if match is None:
+            raise ValueError("--content-range must contain PDF pages or ascending ranges")
+        range_start = int(match.group(1))
+        range_end = int(match.group(2) or match.group(1))
+        if range_start > range_end:
+            raise ValueError(
+                "--content-range must contain non-overlapping ascending PDF ranges"
+            )
+        page_count = range_end - range_start + 1
+        if page_count > MAX_CONTENT_PAGES or selected_count + page_count > MAX_CONTENT_PAGES:
+            raise ValueError(f"--content-range must select at most {MAX_CONTENT_PAGES} pages")
+        if any(range_start <= end and range_end >= start for start, end in intervals):
+            raise ValueError(
+                "--content-range must contain non-overlapping ascending PDF ranges"
+            )
+        intervals.append((range_start, range_end))
+        selected_count += page_count
+    return intervals, selected_count
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    page_options_error = _validate_page_options(args, args.file)
+    if page_options_error is not None:
+        print(f"error: {page_options_error}", file=sys.stderr)
+        return 2
     api_base = args.api_base or os.environ.get("API_BASE_URL") or os.environ.get("API_URL")
     frontend_origin = (
         args.frontend_origin or os.environ.get("FRONTEND_ORIGIN") or os.environ.get("FRONTEND_URL")
@@ -308,10 +468,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         content_type = _content_type_for(file_name)
         question = args.question or SAMPLE_QUESTION
     else:
-        pdf_bytes = make_sample_pdf(SAMPLE_LINES)
+        pdf_bytes = make_sample_pdf(SAMPLE_LINES, page_count=args.generated_pages)
         file_name = "smoke-sample.pdf"
         content_type = "application/pdf"
-        question = args.question or SAMPLE_QUESTION
+        question = args.question or (
+            RANGE_SAMPLE_QUESTION if args.content_range is not None else SAMPLE_QUESTION
+        )
 
     config = SmokeConfig(
         api_base=api_base.rstrip("/"),
@@ -319,7 +481,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         file_name=file_name,
         content_type=content_type,
         question=question,
-        expect_substring=args.expect,
+        expect_substring=(
+            args.expect
+            if args.expect is not None
+            else RANGE_SAMPLE_EXPECTED if args.content_range is not None and not args.file else None
+        ),
+        content_range=args.content_range,
+        expected_page_count=args.expect_pages,
         skip_live_model=args.skip_live_model,
         ready_timeout=args.timeout,
         poll_interval=args.poll_interval,

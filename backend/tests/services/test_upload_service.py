@@ -282,6 +282,120 @@ async def test_init_reserves_quota_creates_record_and_uses_server_path() -> None
     assert (quota[0].document_count, quota[0].total_bytes) == (1, 8)
 
 
+async def test_init_normalizes_and_persists_pdf_content_range() -> None:
+    service, documents, _, _, _ = await setup()
+
+    await service.initialize(
+        SESSION_KEY,
+        UploadInitRequest(
+            file_name="a.pdf",
+            content_type="application/pdf",
+            size_bytes=8,
+            content_range=" 01 - 003, 5 ",
+        ),
+    )
+
+    stored = await documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert stored is not None
+    assert stored.value.content_range == "1-3,5"
+
+
+async def test_init_without_content_range_persists_none() -> None:
+    service, documents, _, _, _ = await setup()
+
+    await service.initialize(
+        SESSION_KEY,
+        UploadInitRequest(file_name="a.pdf", content_type="application/pdf", size_bytes=8),
+    )
+
+    stored = await documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert stored is not None
+    assert stored.value.content_range is None
+
+
+@pytest.mark.parametrize("content_range", ["1,,2", "1-3,3-5", "1-301"])
+async def test_init_rejects_invalid_pdf_content_range_before_side_effects(
+    content_range: str,
+) -> None:
+    service, documents, sessions, blobs, _ = await setup()
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(
+                file_name="a.pdf",
+                content_type="application/pdf",
+                size_bytes=8,
+                content_range=content_range,
+            ),
+        )
+
+    assert (caught.value.code, caught.value.status_code, caught.value.retryable) == (
+        "invalid_content_range",
+        400,
+        False,
+    )
+    assert caught.value.message == "Choose 1 to 300 pages using values such as 1-3,5,9-12."
+    assert blobs.created == []
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+    session = await sessions.get(SESSION_KEY)
+    assert session is not None and session[0].document_count == 0
+
+
+@pytest.mark.parametrize(
+    ("file_name", "content_type"),
+    [
+        ("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        ("a.png", "image/png"),
+        ("a.jpg", "image/jpeg"),
+        ("a.jpeg", "image/jpeg"),
+    ],
+)
+async def test_init_rejects_range_for_supported_non_pdf_before_side_effects(
+    file_name: str, content_type: str
+) -> None:
+    service, documents, _, blobs, _ = await setup()
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(
+                file_name=file_name,
+                content_type=content_type,
+                size_bytes=8,
+                content_range="1-3",
+            ),
+        )
+
+    assert (caught.value.code, caught.value.status_code, caught.value.retryable) == (
+        "content_range_not_supported",
+        400,
+        False,
+    )
+    assert caught.value.message == "Page selection is supported only for PDF files."
+    assert blobs.created == []
+    assert await documents.get(SESSION_KEY, DOCUMENT_ID) is None
+
+
+async def test_init_runs_declared_upload_validation_before_content_range_validation() -> None:
+    service, _, _, blobs, _ = await setup()
+
+    with pytest.raises(AppError) as caught:
+        await service.initialize(
+            SESSION_KEY,
+            UploadInitRequest(
+                file_name="a.exe",
+                content_type="application/octet-stream",
+                size_bytes=8,
+                content_range="1-3",
+            ),
+        )
+
+    assert caught.value.code == "unsupported_file_type"
+    assert blobs.created == []
+
+
 @pytest.mark.parametrize(
     "file_name",
     [

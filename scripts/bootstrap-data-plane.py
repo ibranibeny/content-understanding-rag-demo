@@ -168,9 +168,10 @@ async def main(argv: Sequence[str] | None = None) -> int:
     defaults = None if args.skip_defaults else build_defaults(chat, embedding)
 
     # Deferred imports keep the pure logic above importable and unit-testable without Azure SDKs.
+    from azure.identity.aio import DefaultAzureCredential
+
     from app.services.content_understanding import ContentUnderstandingClient
     from app.services.search_service import AzureSearchService
-    from azure.identity.aio import DefaultAzureCredential
 
     credential = DefaultAzureCredential()
     analyzer_client = ContentUnderstandingClient(

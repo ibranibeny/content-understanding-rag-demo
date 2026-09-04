@@ -15,6 +15,7 @@ from app.domain.models import (
     UploadInitResponse,
 )
 from app.domain.protocols import Clock, DocumentRepository, IngestionBacklog, UploadBlobStore
+from app.services.content_range import InvalidContentRange, normalize_content_range
 from app.services.file_validation import validate_declared_upload, validate_uploaded_file
 from app.services.session_service import SessionService
 
@@ -76,6 +77,24 @@ class UploadService:
             request.size_bytes,
             max_file_bytes=self._sessions.settings.max_file_bytes,
         )
+        content_range: str | None = None
+        if request.content_range is not None:
+            if declared.extension != ".pdf":
+                raise AppError(
+                    "content_range_not_supported",
+                    400,
+                    "Page selection is supported only for PDF files.",
+                    False,
+                )
+            try:
+                content_range = normalize_content_range(request.content_range)
+            except InvalidContentRange:
+                raise AppError(
+                    "invalid_content_range",
+                    400,
+                    "Choose 1 to 300 pages using values such as 1-3,5,9-12.",
+                    False,
+                ) from None
         await self._sessions.require_active(session_key)
         try:
             backlog = await self._backlog.get_ingestion_backlog()
@@ -119,6 +138,7 @@ class UploadService:
                 document_id=document_id,
                 file_name=declared.file_name,
                 content_type=declared.content_type,
+                content_range=content_range,
                 size_bytes=declared.size_bytes,
                 blob_name=blob_name,
                 state=DocumentState.AWAITING_UPLOAD,
@@ -254,6 +274,7 @@ class UploadService:
             document_id=document.document_id,
             file_name=document.file_name,
             state=document.state,
+            content_range=document.content_range,
             document_type=document.document_type,
             title=document.title,
             page_count=document.page_count,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -200,6 +201,7 @@ def document(key: str = SESSION_KEY, *, state: DocumentState = DocumentState.REA
         failure_code="retry_later",
         failure_retryable=True,
         deleted_at=NOW,
+        content_range="1-3,5",
     )
 
 
@@ -239,6 +241,24 @@ async def test_complete_session_document_and_outbox_roundtrip_preserves_etags(
     assert (await repo.get(SESSION_KEY)) == (session(), session_etag)
     assert (await repo.documents.get(SESSION_KEY, DOCUMENT_ID)) == created_document
     assert (await repo.documents.get_pending_outbox("ingest:doc:1"))[0] == outbox()  # type: ignore[index]
+
+
+async def test_document_roundtrip_preserves_content_range_and_old_payload_defaults_none(
+    repository: tuple[TableApplicationRepository, FakeTableClient],
+) -> None:
+    repo, client = repository
+    await repo.documents.create(document())
+
+    current = await repo.documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert current is not None and current.value.content_range == "1-3,5"
+
+    entity = client.entities[(f"session:{SESSION_KEY}", f"document:{DOCUMENT_ID}")]
+    payload = json.loads(str(entity["Payload"]))
+    del payload["contentRange"]
+    entity["Payload"] = json.dumps(payload)
+
+    decoded_old = await repo.documents.get(SESSION_KEY, DOCUMENT_ID)
+    assert decoded_old is not None and decoded_old.value.content_range is None
 
 
 async def test_replace_delete_duplicates_and_stale_etags_translate_to_conflict(

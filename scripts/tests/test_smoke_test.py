@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from types import ModuleType
 
 import httpx
@@ -13,10 +15,15 @@ FRONTEND = "https://frontend.test"
 DOCUMENT_ID = "11111111-1111-1111-1111-111111111111"
 
 
-def _sse_body(with_citation: bool) -> bytes:
+def _sse_body(
+    with_citation: bool,
+    *,
+    answer: str = "Contoso revenue for Q3 2026 was 4,200,000 USD ",
+    source_locator: str = "page-1",
+) -> bytes:
     events = [
         ("retrieval", {"sources": [], "latencyMs": 5}),
-        ("token", {"text": "Contoso revenue for Q3 2026 was 4,200,000 USD "}),
+        ("token", {"text": answer}),
     ]
     if with_citation:
         events.append(
@@ -27,7 +34,7 @@ def _sse_body(with_citation: bool) -> bytes:
                         "citationId": "S1",
                         "documentId": DOCUMENT_ID,
                         "fileName": "smoke-sample.pdf",
-                        "sourceLocator": "page-1",
+                        "sourceLocator": source_locator,
                     }
                 },
             )
@@ -47,8 +54,13 @@ def _sse_body(with_citation: bool) -> bytes:
 def _make_transport(
     *,
     ready_after: int = 1,
+    page_count: int = 1,
     with_citation: bool = True,
+    citation_source_locator: str = "page-1",
+    delete_status: int = 202,
     record: list[tuple[str, str]] | None = None,
+    init_payloads: list[dict[str, object]] | None = None,
+    init_response: dict[str, object] | None = None,
 ) -> httpx.MockTransport:
     counters = {"status_gets": 0}
 
@@ -72,10 +84,12 @@ def _make_transport(
         if method == "POST" and path == "/api/uploads/init":
             assert request.headers.get("origin") == FRONTEND
             body = json.loads(request.content)
+            if init_payloads is not None:
+                init_payloads.append(body)
             assert body["fileName"] and body["sizeBytes"] > 0 and body["contentType"]
             return httpx.Response(
                 200,
-                json={
+                json=init_response or {
                     "uploadUrl": "https://blob.test/uploads/smoke?sig=redacted",
                     "documentId": DOCUMENT_ID,
                     "expiresAt": "2026-09-05T00:00:00Z",
@@ -89,17 +103,20 @@ def _make_transport(
         if method == "GET" and path == f"/api/documents/{DOCUMENT_ID}":
             counters["status_gets"] += 1
             state = "ready" if counters["status_gets"] >= ready_after else "analyzing"
-            return httpx.Response(200, json={"state": state})
+            return httpx.Response(200, json={"state": state, "pageCount": page_count})
         if method == "POST" and path == "/api/chat/stream":
             assert request.headers.get("origin") == FRONTEND
             return httpx.Response(
                 200,
                 headers={"content-type": "text/event-stream"},
-                content=_sse_body(with_citation),
+                content=_sse_body(
+                    with_citation,
+                    source_locator=citation_source_locator,
+                ),
             )
         if method == "DELETE" and path == f"/api/documents/{DOCUMENT_ID}":
             assert request.headers.get("origin") == FRONTEND
-            return httpx.Response(202, json={"state": "deleting"})
+            return httpx.Response(delete_status, json={"state": "deleting"})
         return httpx.Response(404, json={"path": path})
 
     return httpx.MockTransport(handler)
@@ -114,6 +131,28 @@ def test_make_sample_pdf_is_valid(smoke_module: ModuleType) -> None:
     assert pdf.startswith(b"%PDF-")
     assert b"%%EOF" in pdf
     assert b"stream" in pdf
+
+
+def test_make_sample_pdf_builds_three_page_tree_with_text_on_every_page(
+    smoke_module: ModuleType,
+) -> None:
+    pdf = smoke_module.make_sample_pdf(smoke_module.SAMPLE_LINES, page_count=3)
+    assert b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>" in pdf
+    assert b"2 0 obj\n<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>" in pdf
+    assert b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>" in pdf
+    assert b"/Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3" in pdf
+    assert pdf.count(b"/Type /Page /Parent 2 0 R") == 3
+    assert b"/Font << /F1 3 0 R >> >> /Contents 5 0 R" in pdf
+    assert pdf.count(b"Total revenue for Q3 2026 was 4,200,000 USD.") == 3
+    assert pdf.count(b"Page 1 unique marker: ORBIT-ALPHA-1") == 1
+    assert pdf.count(b"Page 2 unique marker: ORBIT-BRAVO-2") == 1
+    assert pdf.count(b"Page 3 unique marker: ORBIT-CHARLIE-3") == 1
+    xref_offset = int(re.search(rb"startxref\n(\d+)\n%%EOF", pdf).group(1))
+    assert pdf[xref_offset:].startswith(b"xref\n")
+    for object_number in range(1, 10):
+        object_offset = pdf.index(f"{object_number} 0 obj\n".encode("ascii"))
+        xref_lines = pdf[xref_offset:].splitlines()
+        assert int(xref_lines[2 + object_number].split()[0]) == object_offset
 
 
 def test_parse_sse_groups_events(smoke_module: ModuleType) -> None:
@@ -137,14 +176,74 @@ def test_full_flow_requires_citation_and_deletes(smoke_module: ModuleType) -> No
     assert ("PUT", "/uploads/smoke") in record
     assert ("POST", "/api/chat/stream") in record
     assert ("DELETE", f"/api/documents/{DOCUMENT_ID}") in record
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
     # The status endpoint was polled until it reported ready.
     assert sum(1 for method, path in record if method == "GET" and path.endswith(DOCUMENT_ID)) == 2
+
+
+def test_range_is_sent_and_expected_ready_page_count_matches(smoke_module: ModuleType) -> None:
+    init_payloads: list[dict[str, object]] = []
+    transport = _make_transport(
+        page_count=2,
+        init_payloads=init_payloads,
+        citation_source_locator="page 2",
+    )
+    config = smoke_module.SmokeConfig(
+        api_base=API,
+        frontend_origin=FRONTEND,
+        content_range="2-3",
+        expected_page_count=2,
+        poll_interval=0.0,
+    )
+    pdf = smoke_module.make_sample_pdf(smoke_module.SAMPLE_LINES, page_count=3)
+    with _client(transport) as client:
+        result = smoke_module.run_smoke(client, config, pdf, sleep=lambda _s: None)
+    assert result.final_state == "ready"
+    assert result.citation_page_numbers == (2,)
+    assert init_payloads[0]["contentRange"] == "2-3"
+
+
+def test_default_upload_init_omits_content_range(smoke_module: ModuleType) -> None:
+    init_payloads: list[dict[str, object]] = []
+    transport = _make_transport(init_payloads=init_payloads)
+    config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND)
+    with _client(transport) as client:
+        smoke_module.run_smoke(
+            client,
+            config,
+            smoke_module.make_sample_pdf(("x",)),
+            sleep=lambda _s: None,
+        )
+    assert "contentRange" not in init_payloads[0]
+
+
+def test_ready_page_count_mismatch_has_safe_useful_error(smoke_module: ModuleType) -> None:
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(page_count=3, record=record)
+    config = smoke_module.SmokeConfig(
+        api_base=API, frontend_origin=FRONTEND, expected_page_count=2
+    )
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="expected 2 processed pages, got 3"
+    ):
+        smoke_module.run_smoke(
+            client,
+            config,
+            smoke_module.make_sample_pdf(smoke_module.SAMPLE_LINES, page_count=3),
+            sleep=lambda _s: None,
+        )
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
 
 
 def test_skip_live_model_skips_readiness_and_chat(smoke_module: ModuleType) -> None:
     record: list[tuple[str, str]] = []
     transport = _make_transport(record=record)
-    config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND, skip_live_model=True)
+    config = smoke_module.SmokeConfig(
+        api_base=API,
+        frontend_origin=FRONTEND,
+        skip_live_model=True,
+        expected_page_count=999,
+    )
     pdf = smoke_module.make_sample_pdf(("x",))
     with _client(transport) as client:
         result = smoke_module.run_smoke(client, config, pdf, sleep=lambda _s: None)
@@ -155,18 +254,238 @@ def test_skip_live_model_skips_readiness_and_chat(smoke_module: ModuleType) -> N
 
 
 def test_missing_citation_fails(smoke_module: ModuleType) -> None:
-    transport = _make_transport(ready_after=1, with_citation=False)
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(ready_after=1, with_citation=False, record=record)
     config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND)
     pdf = smoke_module.make_sample_pdf(("x",))
     with _client(transport) as client, pytest.raises(smoke_module.SmokeError):
         smoke_module.run_smoke(client, config, pdf, sleep=lambda _s: None)
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
 
 
 def test_readiness_timeout_fails_fast(smoke_module: ModuleType) -> None:
-    transport = _make_transport(ready_after=999)
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(ready_after=999, record=record)
     config = smoke_module.SmokeConfig(
         api_base=API, frontend_origin=FRONTEND, ready_timeout=0.0, poll_interval=0.0
     )
     pdf = smoke_module.make_sample_pdf(("x",))
     with _client(transport) as client, pytest.raises(smoke_module.SmokeError):
         smoke_module.run_smoke(client, config, pdf, sleep=lambda _s: None)
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
+
+
+def test_cleanup_failure_does_not_mask_polling_error(smoke_module: ModuleType) -> None:
+    transport = _make_transport(ready_after=999, delete_status=500)
+    config = smoke_module.SmokeConfig(
+        api_base=API, frontend_origin=FRONTEND, ready_timeout=0.0, poll_interval=0.0
+    )
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="timed out"
+    ):
+        smoke_module.run_smoke(
+            client,
+            config,
+            smoke_module.make_sample_pdf(("x",)),
+            sleep=lambda _s: None,
+        )
+
+
+def test_document_id_with_missing_upload_url_is_deleted(smoke_module: ModuleType) -> None:
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(
+        record=record,
+        init_response={"documentId": DOCUMENT_ID, "requiredHeaders": {}},
+    )
+    config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND)
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="missing uploadUrl"
+    ):
+        smoke_module.run_smoke(client, config, b"pdf")
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
+
+
+def test_document_id_with_malformed_required_headers_is_deleted(
+    smoke_module: ModuleType,
+) -> None:
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(
+        record=record,
+        init_response={
+            "documentId": DOCUMENT_ID,
+            "uploadUrl": "https://blob.test/uploads/smoke?sig=redacted",
+            "requiredHeaders": ["not-a-header-pair"],
+        },
+    )
+    config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND)
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="malformed requiredHeaders"
+    ):
+        smoke_module.run_smoke(client, config, b"pdf")
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
+
+
+def test_ranged_smoke_rejects_citation_outside_selected_pages(smoke_module: ModuleType) -> None:
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(
+        page_count=2,
+        citation_source_locator="page 1",
+        record=record,
+    )
+    config = smoke_module.SmokeConfig(
+        api_base=API,
+        frontend_origin=FRONTEND,
+        content_range="2-3",
+        expected_page_count=2,
+    )
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="outside selected range"
+    ):
+        smoke_module.run_smoke(
+            client,
+            config,
+            smoke_module.make_sample_pdf(smoke_module.SAMPLE_LINES, page_count=3),
+            sleep=lambda _s: None,
+        )
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
+
+
+def test_cli_configures_generated_ranged_pdf(smoke_module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_smoke(client: httpx.Client, config: object, pdf_bytes: bytes) -> object:
+        captured.update(config=config, pdf_bytes=pdf_bytes)
+        return smoke_module.SmokeResult(DOCUMENT_ID, "ready", 1, "answer", (2,), True)
+
+    monkeypatch.setattr(smoke_module, "run_smoke", fake_run_smoke)
+    exit_code = smoke_module.main(
+        [
+            "--api-base", API,
+            "--frontend-origin", FRONTEND,
+            "--generated-pages", "3",
+            "--content-range", "2-3",
+            "--expect-pages", "2",
+        ]
+    )
+    config = captured["config"]
+    assert exit_code == 0
+    assert config.content_range == "2-3"
+    assert config.expected_page_count == 2
+    assert config.question == smoke_module.RANGE_SAMPLE_QUESTION
+    assert config.expect_substring == smoke_module.RANGE_SAMPLE_EXPECTED
+    assert b"/Count 3" in captured["pdf_bytes"]
+
+
+def test_cli_accepts_composite_generated_pdf_range(
+    smoke_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_smoke(client: httpx.Client, config: object, pdf_bytes: bytes) -> object:
+        captured["config"] = config
+        return smoke_module.SmokeResult(DOCUMENT_ID, "ready", 1, "answer", (2,), True)
+
+    monkeypatch.setattr(smoke_module, "run_smoke", fake_run_smoke)
+    exit_code = smoke_module.main(
+        [
+            "--api-base", API,
+            "--frontend-origin", FRONTEND,
+            "--generated-pages", "5",
+            "--content-range", "1-3,5",
+            "--expect-pages", "4",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["config"].content_range == "1-3,5"
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--generated-pages", "0"],
+        ["--expect-pages", "0"],
+        ["--generated-pages", "2", "--expect-pages", "3"],
+        ["--generated-pages", "2", "--content-range", "2-3"],
+        ["--generated-pages", "3", "--content-range", "2-3", "--expect-pages", "1"],
+        ["--content-range", "3-2"],
+    ],
+)
+def test_cli_rejects_invalid_page_options(
+    smoke_module: ModuleType,
+    extra_args: list[str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = smoke_module.main(
+        ["--api-base", API, "--frontend-origin", FRONTEND, *extra_args]
+    )
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_rejects_range_options_for_non_pdf_file(
+    smoke_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    exit_code = smoke_module.main(
+        [
+            "--api-base", API,
+            "--frontend-origin", FRONTEND,
+            "--file", str(image),
+            "--content-range", "1-1",
+        ]
+    )
+    assert exit_code == 2
+    assert "PDF" in capsys.readouterr().err
+
+
+def test_cli_rejects_generated_pages_for_non_pdf_file(
+    smoke_module: ModuleType,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    exit_code = smoke_module.main(
+        [
+            "--api-base", API,
+            "--frontend-origin", FRONTEND,
+            "--file", str(image),
+            "--generated-pages", "3",
+        ]
+    )
+    assert exit_code == 2
+    assert "PDF" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "content_range",
+    [
+        "1-301",
+        "1-200,201-400",
+        "1-99999999999999999999999999999999999999999999999999",
+        "9" * 101,
+        "1-2,2-3",
+        "1-2,٢",
+    ],
+)
+def test_cli_rejects_oversized_pathological_or_non_ascii_ranges(
+    smoke_module: ModuleType,
+    content_range: str,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    supplied_pdf = tmp_path / "supplied.pdf"
+    supplied_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    exit_code = smoke_module.main(
+        [
+            "--api-base", API,
+            "--frontend-origin", FRONTEND,
+            "--file", str(supplied_pdf),
+            "--content-range", content_range,
+        ]
+    )
+    assert exit_code == 2
+    assert "error:" in capsys.readouterr().err
