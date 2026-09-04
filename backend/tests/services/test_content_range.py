@@ -36,6 +36,8 @@ def test_valid_ranges_are_normalized_in_token_order(raw: str, expected: str) -> 
         ("1-", "invalid_syntax"),
         ("-5", "invalid_syntax"),
         ("a", "invalid_syntax"),
+        ("١-٣", "invalid_syntax"),
+        ("１-３", "invalid_syntax"),
         ("1,,2", "invalid_syntax"),
         ("1-3,3", "duplicate_or_overlap"),
         ("1-5,2-4", "duplicate_or_overlap"),

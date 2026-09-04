@@ -3,7 +3,7 @@ import re
 MAX_CONTENT_PAGES = 300
 _MAX_NUMERAL_DIGITS = 100
 _TOKEN_PATTERN = re.compile(
-    rf"^(\d{{1,{_MAX_NUMERAL_DIGITS}}})(?:\s*-\s*(\d{{1,{_MAX_NUMERAL_DIGITS}}}))?$"
+    rf"^([0-9]{{1,{_MAX_NUMERAL_DIGITS}}})(?:\s*-\s*([0-9]{{1,{_MAX_NUMERAL_DIGITS}}}))?$"
 )
 
 
