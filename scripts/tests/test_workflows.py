@@ -143,6 +143,9 @@ def test_deploy_updates_container_apps_and_cleanup_job() -> None:
     assert text.count("az containerapp update") >= 3, "API, worker, and frontend apps must be updated"
     assert "az containerapp job update" in text, "the cleanup job image must be updated"
     assert "API_UPSTREAM=${API_URL}" in text, "frontend proxy must target the API URL"
+    assert text.count("ANALYZER_ROUTER_ID=${ANALYZER_ROUTER_ID}") == 3, (
+        "API, worker, and cleanup must receive the GA-compatible router ID"
+    )
 
 
 def test_deploy_maps_production_variables_into_job_env() -> None:
