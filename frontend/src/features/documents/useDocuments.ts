@@ -43,10 +43,9 @@ export function useDocuments(cancelChat: () => void) {
   }, [selectedId, documents]);
 
   async function upload(file: File, contentRange?: string) {
-    void contentRange;
     setUploading(true); setProgress(0); setError(undefined);
     try {
-      const initialized = await api.initUpload(file);
+      const initialized = await api.initUpload(file, contentRange);
       const etag = await uploadBlob(file, initialized, setProgress);
       const completed = await api.completeUpload(initialized.documentId, etag);
       setSelectedId(completed.documentId);

@@ -17,6 +17,7 @@ export interface DocumentSummary {
   documentId: string;
   fileName: string;
   state: DocumentState;
+  contentRange?: string | null;
   documentType?: string | null;
   title?: string | null;
   pageCount?: number | null;
