@@ -163,6 +163,36 @@ async def test_request_delete_retries_an_etag_race_and_is_idempotent() -> None:
     assert second.value.deletion_requested_at == NOW
 
 
+async def test_request_delete_releases_session_quota_once() -> None:
+    repository = MemoryDocumentRepository()
+    await repository.create(record())
+    releases: list[tuple[str, int]] = []
+
+    async def release(session_key: str, size: int) -> None:
+        releases.append((session_key, size))
+
+    service = DeletionService(repository, Blobs(), Search(), release_quota=release)
+
+    await service.request_delete(SESSION, DOC, NOW)
+    await service.request_delete(SESSION, DOC, NOW + timedelta(minutes=1))
+
+    assert releases == [(SESSION, 100)]
+
+
+async def test_request_delete_survives_a_failed_quota_release() -> None:
+    repository = MemoryDocumentRepository()
+    await repository.create(record())
+
+    async def release(session_key: str, size: int) -> None:
+        raise AppError("invalid_quota_release", 409, "cannot release", False)
+
+    service = DeletionService(repository, Blobs(), Search(), release_quota=release)
+
+    accepted = await service.request_delete(SESSION, DOC, NOW)
+
+    assert accepted.value.state is DocumentState.DELETING
+
+
 async def test_cross_session_and_missing_documents_are_same_safe_not_found() -> None:
     service, _, _, _ = await make_service(record())
     for session, document_id in ((OTHER_SESSION, DOC), (SESSION, UUID(int=0))):
