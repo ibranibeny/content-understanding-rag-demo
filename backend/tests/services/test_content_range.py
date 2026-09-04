@@ -1,5 +1,6 @@
 import pytest
 
+from app.services import content_range
 from app.services.content_range import (
     MAX_CONTENT_PAGES,
     InvalidContentRange,
@@ -56,3 +57,22 @@ def test_more_than_300_discrete_pages_is_rejected() -> None:
         normalize_content_range(raw)
 
     assert caught.value.reason == "too_many_pages"
+
+
+def test_huge_range_is_rejected_before_page_iteration(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_if_range_is_iterated(*_args: int) -> range:
+        raise AssertionError("page range must be bounded before iteration")
+
+    monkeypatch.setattr(content_range, "range", fail_if_range_is_iterated, raising=False)
+
+    with pytest.raises(InvalidContentRange) as caught:
+        normalize_content_range("1-999999999999")
+
+    assert caught.value.reason == "too_many_pages"
+
+
+def test_oversized_numeric_token_has_stable_rejection_reason() -> None:
+    with pytest.raises(InvalidContentRange) as caught:
+        normalize_content_range("9" * 5_000)
+
+    assert caught.value.reason == "invalid_syntax"

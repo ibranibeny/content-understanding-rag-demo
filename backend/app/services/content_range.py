@@ -1,7 +1,10 @@
 import re
 
 MAX_CONTENT_PAGES = 300
-_TOKEN_PATTERN = re.compile(r"^(\d+)(?:\s*-\s*(\d+))?$")
+_MAX_NUMERAL_DIGITS = 100
+_TOKEN_PATTERN = re.compile(
+    rf"^(\d{{1,{_MAX_NUMERAL_DIGITS}}})(?:\s*-\s*(\d{{1,{_MAX_NUMERAL_DIGITS}}}))?$"
+)
 
 
 class InvalidContentRange(ValueError):
@@ -26,17 +29,23 @@ def normalize_content_range(raw: str) -> str:
         if match is None:
             raise InvalidContentRange("invalid_syntax")
 
-        start = int(match.group(1))
-        end = int(match.group(2)) if match.group(2) is not None else start
+        try:
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) is not None else start
+        except ValueError as error:
+            raise InvalidContentRange("invalid_syntax") from error
         if start < 1 or end < 1:
             raise InvalidContentRange("page_below_one")
         if start > end:
             raise InvalidContentRange("range_reversed")
 
+        page_count = end - start + 1
+        if page_count > MAX_CONTENT_PAGES:
+            raise InvalidContentRange("too_many_pages")
+
         pages = range(start, end + 1)
         if any(page in selected_pages for page in pages):
             raise InvalidContentRange("duplicate_or_overlap")
-        page_count = end - start + 1
         if len(selected_pages) + page_count > MAX_CONTENT_PAGES:
             raise InvalidContentRange("too_many_pages")
         selected_pages.update(pages)
