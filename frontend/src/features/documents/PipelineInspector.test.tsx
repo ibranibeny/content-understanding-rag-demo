@@ -32,4 +32,18 @@ describe("PipelineInspector", () => {
     expect(screen.getByText("Pages requested")).toBeVisible();
     expect(screen.getByText("ALL")).toBeVisible();
   });
+
+  test("marks the five-card metrics group for a balanced layout", () => {
+    render(<PipelineInspector document={document()} />);
+
+    const metrics = screen.getByText("Pages requested").parentElement?.parentElement;
+
+    expect(metrics).toHaveClass("metrics", "metrics--five");
+    expect(metrics).toHaveTextContent("Pages requested");
+    expect(metrics).toHaveTextContent("Pages");
+    expect(metrics).toHaveTextContent("Chunks");
+    expect(metrics).toHaveTextContent("Vector");
+    expect(metrics).toHaveTextContent("Tokens");
+    expect(metrics?.children).toHaveLength(5);
+  });
 });
