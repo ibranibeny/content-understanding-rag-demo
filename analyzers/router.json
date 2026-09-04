@@ -1,0 +1,20 @@
+{
+  "analyzerId": "business-document-router",
+  "name": "Business Document Router",
+  "description": "Classifies one uploaded business document and routes it to its extraction analyzer.",
+  "baseAnalyzerId": "prebuilt-document",
+  "dynamicFieldSchema": false,
+  "config": {
+    "enableSegment": false,
+    "omitContent": true,
+    "returnDetails": true,
+    "tableFormat": "markdown",
+    "contentCategories": {
+      "general-business": {"description": "A general business document that is not an invoice, receipt, or contract.", "analyzerId": "workshop-general-business"},
+      "invoice": {"description": "A bill requesting payment from a customer for supplied goods or services.", "analyzerId": "workshop-invoice"},
+      "receipt": {"description": "Proof of a completed purchase or payment from a merchant.", "analyzerId": "workshop-receipt"},
+      "contract": {"description": "A legal agreement defining terms, obligations, rights, or termination conditions.", "analyzerId": "workshop-contract"}
+    }
+  },
+  "fieldSchema": {"name": "BusinessDocumentRoute", "fields": {}}
+}

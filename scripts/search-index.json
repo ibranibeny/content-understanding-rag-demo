@@ -1,0 +1,37 @@
+{
+  "name": "document-chunks",
+  "fields": [
+    {"name": "chunkId", "type": "Edm.String", "key": true},
+    {"name": "sessionKey", "type": "Edm.String", "filterable": true},
+    {"name": "documentId", "type": "Edm.String", "filterable": true},
+    {"name": "fileName", "type": "Edm.String", "searchable": true, "retrievable": true},
+    {"name": "documentType", "type": "Edm.String", "filterable": true, "facetable": true},
+    {"name": "title", "type": "Edm.String", "searchable": true, "retrievable": true},
+    {"name": "sectionPath", "type": "Edm.String", "searchable": true, "retrievable": true},
+    {"name": "pageNumber", "type": "Edm.Int32", "filterable": true, "retrievable": true},
+    {"name": "sourceLocator", "type": "Edm.String", "retrievable": true},
+    {"name": "content", "type": "Edm.String", "searchable": true, "retrievable": true},
+    {"name": "contentVector", "type": "Collection(Edm.Single)", "searchable": true, "retrievable": false, "dimensions": 3072, "vectorSearchProfile": "chunk-vector-profile"},
+    {"name": "expiresAt", "type": "Edm.DateTimeOffset", "filterable": true, "sortable": true}
+  ],
+  "vectorSearch": {
+    "algorithms": [
+      {"name": "chunk-hnsw", "kind": "hnsw", "hnswParameters": {"metric": "cosine"}}
+    ],
+    "profiles": [
+      {"name": "chunk-vector-profile", "algorithm": "chunk-hnsw"}
+    ]
+  },
+  "semantic": {
+    "configurations": [
+      {
+        "name": "chunk-semantic-config",
+        "prioritizedFields": {
+          "titleField": {"fieldName": "title"},
+          "prioritizedKeywordsFields": [{"fieldName": "sectionPath"}],
+          "prioritizedContentFields": [{"fieldName": "content"}]
+        }
+      }
+    ]
+  }
+}

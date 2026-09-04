@@ -1,0 +1,25 @@
+{
+  "analyzerId": "workshop-general-business",
+  "name": "General Business Document",
+  "description": "Extracts the main facts and actions from a general business document.",
+  "baseAnalyzerId": "prebuilt-document",
+  "dynamicFieldSchema": false,
+  "config": {
+    "returnDetails": true,
+    "tableFormat": "markdown",
+    "estimateFieldSourceAndConfidence": true
+  },
+  "fieldSchema": {
+    "name": "GeneralBusinessFields",
+    "fields": {
+      "title": {"type": "string", "description": "Document title."},
+      "summary": {"type": "string", "description": "Concise summary of the document."},
+      "documentDate": {"type": "date", "description": "Primary document date."},
+      "organizations": {"type": "array", "description": "Organizations named in the document.", "items": {"type": "string"}},
+      "people": {"type": "array", "description": "People named in the document.", "items": {"type": "string"}},
+      "keyTopics": {"type": "array", "description": "Main topics discussed.", "items": {"type": "string"}},
+      "actionItems": {"type": "array", "description": "Actions requested or agreed.", "items": {"type": "string"}},
+      "importantFacts": {"type": "array", "description": "Important factual statements.", "items": {"type": "string"}}
+    }
+  }
+}

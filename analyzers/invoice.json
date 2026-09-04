@@ -1,0 +1,27 @@
+{
+  "analyzerId": "workshop-invoice",
+  "name": "Invoice",
+  "description": "Extracts parties, dates, totals, and line items from an invoice.",
+  "baseAnalyzerId": "prebuilt-document",
+  "dynamicFieldSchema": false,
+  "config": {
+    "returnDetails": true,
+    "tableFormat": "markdown",
+    "estimateFieldSourceAndConfidence": true
+  },
+  "fieldSchema": {
+    "name": "InvoiceFields",
+    "fields": {
+      "vendorName": {"type": "string", "description": "Vendor or supplier name."},
+      "customerName": {"type": "string", "description": "Customer or bill-to name."},
+      "invoiceNumber": {"type": "string", "description": "Invoice identifier."},
+      "invoiceDate": {"type": "date", "description": "Invoice issue date."},
+      "dueDate": {"type": "date", "description": "Payment due date."},
+      "currency": {"type": "string", "description": "Currency code or symbol."},
+      "subtotal": {"type": "number", "description": "Amount before tax."},
+      "tax": {"type": "number", "description": "Tax amount."},
+      "total": {"type": "number", "description": "Total amount due."},
+      "lineItems": {"type": "array", "description": "Invoice line items.", "items": {"type": "object", "properties": {"description": {"type": "string"}, "quantity": {"type": "number"}, "unitPrice": {"type": "number"}, "amount": {"type": "number"}}}}
+    }
+  }
+}
