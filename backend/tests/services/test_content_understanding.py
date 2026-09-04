@@ -442,3 +442,71 @@ async def test_failed_and_malformed_results_are_terminal_and_safe() -> None:
         assert not caught.value.retryable
         assert "private content" not in str(caught.value)
     await http.aclose()
+
+
+async def test_poll_tolerates_unextracted_array_field_as_none() -> None:
+    payload = {
+        "id": "result-1",
+        "status": "Succeeded",
+        "result": {"contents": [{
+            "category": "memo",
+            "markdown": "# Memo",
+            "endPageNumber": 1,
+            "fields": {
+                "present": {"type": "string", "valueString": "X"},
+                "missing": {"type": "array"},
+            },
+        }]},
+    }
+    service, _, http = client(lambda request: httpx.Response(200, json=payload))
+
+    polled = await service.poll(OPERATION)
+
+    assert polled.status is AnalysisStatus.SUCCEEDED
+    assert polled.result is not None
+    assert polled.result.fields == {"present": "X", "missing": None}
+    await http.aclose()
+
+
+async def test_poll_tolerates_unextracted_scalar_field_as_none() -> None:
+    payload = {
+        "id": "result-1",
+        "status": "Succeeded",
+        "result": {"contents": [{
+            "category": "memo",
+            "markdown": "# Memo",
+            "endPageNumber": 1,
+            "fields": {
+                "present": {"type": "string", "valueString": "X"},
+                "missing": {"type": "string"},
+            },
+        }]},
+    }
+    service, _, http = client(lambda request: httpx.Response(200, json=payload))
+
+    polled = await service.poll(OPERATION)
+
+    assert polled.result is not None
+    assert polled.result.fields == {"present": "X", "missing": None}
+    await http.aclose()
+
+
+async def test_poll_rejects_unknown_field_type_as_malformed() -> None:
+    payload = {
+        "id": "result-1",
+        "status": "Succeeded",
+        "result": {"contents": [{
+            "category": "memo",
+            "markdown": "# Memo",
+            "endPageNumber": 1,
+            "fields": {"mystery": {"type": "mystery", "valueString": "x"}},
+        }]},
+    }
+    service, _, http = client(lambda request: httpx.Response(200, json=payload))
+
+    with pytest.raises(ContentUnderstandingError) as caught:
+        await service.poll(OPERATION)
+
+    assert caught.value.code == "content_understanding_malformed"
+    assert not caught.value.retryable
+    await http.aclose()
