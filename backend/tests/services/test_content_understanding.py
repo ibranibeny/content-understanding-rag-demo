@@ -186,6 +186,102 @@ async def test_poll_normalizes_document_result_fields_locators_pages_and_tokens(
     await http.aclose()
 
 
+async def test_poll_counts_processed_pages_for_ranged_analysis() -> None:
+    payload = {
+        "id": "result-1",
+        "status": "Succeeded",
+        "result": {
+            "contents": [
+                {
+                    "category": "invoice",
+                    "markdown": "# Invoice",
+                    "fields": {},
+                    "pages": [{"pageNumber": 2}, {"pageNumber": 3}],
+                    "endPageNumber": 3,
+                }
+            ]
+        },
+    }
+    service, _, http = client(lambda request: httpx.Response(200, json=payload))
+
+    polled = await service.poll(OPERATION)
+
+    assert polled.result is not None
+    assert polled.result.page_count == 2
+    await http.aclose()
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [],
+        ["page 1"],
+        [{}],
+        [{"pageNumber": 0}],
+        [{"pageNumber": True}],
+        [{"pageNumber": 1}, {"pageNumber": 1}],
+        [{"pageNumber": 2}, {"pageNumber": 1}],
+    ],
+    ids=[
+        "empty",
+        "non-dict-entry",
+        "missing-page-number",
+        "zero-page-number",
+        "boolean-page-number",
+        "duplicate-page-number",
+        "out-of-order-page-number",
+    ],
+)
+async def test_poll_rejects_malformed_page_metadata(pages: list[object]) -> None:
+    payload = {
+        "id": "result-1",
+        "status": "Succeeded",
+        "result": {
+            "contents": [
+                {
+                    "category": "invoice",
+                    "markdown": "# Invoice",
+                    "fields": {},
+                    "pages": pages,
+                    "endPageNumber": 3,
+                }
+            ]
+        },
+    }
+    service, _, http = client(lambda request: httpx.Response(200, json=payload))
+
+    with pytest.raises(ContentUnderstandingError) as caught:
+        await service.poll(OPERATION)
+
+    assert caught.value.code == "content_understanding_malformed"
+    assert not caught.value.retryable
+    await http.aclose()
+
+
+async def test_poll_uses_end_page_number_when_pages_are_absent() -> None:
+    payload = {
+        "id": "result-1",
+        "status": "Succeeded",
+        "result": {
+            "contents": [
+                {
+                    "category": "invoice",
+                    "markdown": "# Invoice",
+                    "fields": {},
+                    "endPageNumber": 3,
+                }
+            ]
+        },
+    }
+    service, _, http = client(lambda request: httpx.Response(200, json=payload))
+
+    polled = await service.poll(OPERATION)
+
+    assert polled.result is not None
+    assert polled.result.page_count == 3
+    await http.aclose()
+
+
 async def test_poll_normalizes_image_locator_as_one_page() -> None:
     payload = {"id": "result-1", "status": "Succeeded", "result": {"contents": [{"kind": "document", "category": "receipt", "markdown": "receipt", "mimeType": "image/jpeg", "pages": [{"pageNumber": 1}], "fields": {"merchantName": {"type": "string", "valueString": "Shop", "source": "D(1,0,0,10,0,10,10,0,10)"}}}]}}
     service, _, http = client(lambda request: httpx.Response(200, json=payload))
