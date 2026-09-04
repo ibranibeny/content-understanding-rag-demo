@@ -188,6 +188,27 @@ def test_deploy_runs_bootstrap_and_smoke_via_backend_uv() -> None:
     )
 
 
+def test_deploy_waits_for_all_container_app_revisions_before_bootstrap_and_smoke() -> None:
+    text = _read("deploy.yml")
+    readiness_start = text.index("- name: Wait for deployed Container App revisions")
+    bootstrap_start = text.index("- name: Bootstrap Content Understanding and AI Search")
+    smoke_start = text.index("- name: Smoke test")
+    readiness_step = text[readiness_start:bootstrap_start]
+
+    assert readiness_start < bootstrap_start < smoke_start
+    assert "for attempt in $(seq 1 20)" in readiness_step
+    assert "sleep 5" in readiness_step
+    assert "az containerapp show" in readiness_step
+    assert "properties.latestReadyRevisionName" in readiness_step
+    assert "properties.latestRevisionName" in readiness_step
+    for app_name in (
+        "API_CONTAINER_APP_NAME",
+        "WORKER_CONTAINER_APP_NAME",
+        "FRONTEND_CONTAINER_APP_NAME",
+    ):
+        assert f'"${app_name}"' in readiness_step
+
+
 def test_deploy_runs_preliminary_then_exactly_one_full_ranged_production_smoke() -> None:
     text = _read("deploy.yml")
     smoke_commands = re.findall(r"uv --project backend run python scripts/smoke_test\.py[^\n]+", text)

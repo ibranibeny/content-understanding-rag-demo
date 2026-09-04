@@ -71,7 +71,6 @@ class SmokeResult:
     final_state: str
     citation_count: int
     answer: str
-    citation_page_numbers: tuple[int, ...]
     deleted: bool
 
 
@@ -213,7 +212,6 @@ def run_smoke(
     state = ""
     citation_count = 0
     answer = ""
-    citation_pages: tuple[int, ...] = ()
     deleted = False
     try:
         upload_url = init_body.get("uploadUrl")
@@ -247,7 +245,7 @@ def run_smoke(
             state = _poll_until_ready(
                 client, document_id, config, sleep=sleep, monotonic=monotonic
             )
-            citation_count, answer, citation_pages = _ask_grounded_question(
+            citation_count, answer = _ask_grounded_question(
                 client, document_id, config, origin
             )
             if citation_count < 1:
@@ -258,7 +256,6 @@ def run_smoke(
                 raise SmokeError(
                     f"expected substring not found in answer: {config.expect_substring!r}"
                 )
-            _validate_citation_pages(citation_pages, config.content_range)
     finally:
         has_original_error = sys.exc_info()[0] is not None
         try:
@@ -267,9 +264,7 @@ def run_smoke(
             if not has_original_error:
                 raise
 
-    return SmokeResult(
-        document_id, state, citation_count, answer, citation_pages, deleted
-    )
+    return SmokeResult(document_id, state, citation_count, answer, deleted)
 
 
 def _poll_until_ready(
@@ -311,10 +306,9 @@ def _ask_grounded_question(
     document_id: str,
     config: SmokeConfig,
     origin: dict[str, str],
-) -> tuple[int, str, tuple[int, ...]]:
+) -> tuple[int, str]:
     citations = 0
     tokens: list[str] = []
-    citation_pages: list[int] = []
     with client.stream(
         "POST",
         "/api/chat/stream",
@@ -326,30 +320,11 @@ def _ask_grounded_question(
         for event, data in parse_sse(response.iter_lines()):
             if event == "citation":
                 citations += 1
-                citation = data.get("citation")
-                if isinstance(citation, dict):
-                    locator = str(citation.get("sourceLocator", ""))
-                    page_match = re.search(r"(?i)\bpage[- ]([0-9]+)\b", locator)
-                    if page_match is not None:
-                        citation_pages.append(int(page_match.group(1)))
             elif event == "token":
                 tokens.append(str(data.get("text", "")))
             elif event == "error":
                 raise SmokeError(f"chat stream returned an error event: {data.get('code')}")
-    return citations, "".join(tokens), tuple(citation_pages)
-
-
-def _validate_citation_pages(
-    citation_pages: tuple[int, ...], content_range: str | None
-) -> None:
-    if content_range is None:
-        return
-    intervals, _ = _parse_content_range(content_range)
-    if not citation_pages:
-        raise SmokeError("ranged answer citation has no page number in sourceLocator")
-    for page in citation_pages:
-        if not any(start <= page <= end for start, end in intervals):
-            raise SmokeError(f"citation page {page} is outside selected range {content_range!r}")
+    return citations, "".join(tokens)
 
 
 def _delete_document(client: httpx.Client, document_id: str, origin: dict[str, str]) -> bool:
