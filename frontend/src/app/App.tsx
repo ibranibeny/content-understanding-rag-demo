@@ -25,7 +25,7 @@ export function App() {
     <nav className="mobile-tabs" role="tablist" aria-label="Console panes">{(["documents", "inspector", "chat"] as Pane[]).map((item) => <button key={item} role="tab" aria-selected={pane === item} onClick={() => activate(item)} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && activate(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
     <div className="workspace">
       <aside className="documents-pane" aria-label="Documents" data-mobile-hidden={pane !== "documents"}>
-        <DocumentUploader busy={documents.uploading} progress={documents.progress} onUpload={(file) => void documents.upload(file)} onError={documents.setError} />
+        <DocumentUploader busy={documents.uploading} progress={documents.progress} onUpload={(file, contentRange) => void documents.upload(file, contentRange)} onError={documents.setError} />
         <div className="quota">{documents.session ? <><strong>{documents.session.documentsUsed} of {documents.session.documentLimit} documents</strong><br />{Math.round(documents.session.bytesUsed / 1_048_576)} of {Math.round(documents.session.byteLimit / 1_048_576)} MB · {documents.session.questionsUsed}/{documents.session.questionLimit} questions</> : "Loading session quota…"}</div>
         {documents.error && <ErrorNotice message={documents.error} onRetry={() => void documents.refresh()} />}
         {documents.loading ? <p role="status" className="empty">Loading documents…</p> : <DocumentList documents={documents.documents} selectedId={documents.selectedId} onSelect={(id) => { documents.setSelectedId(id); setPane("inspector"); }} onRetry={(id) => void documents.retry(id)} onDelete={(id) => void documents.remove(id)} />}

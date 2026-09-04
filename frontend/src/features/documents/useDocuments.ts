@@ -42,7 +42,8 @@ export function useDocuments(cancelChat: () => void) {
     return () => { live = false; };
   }, [selectedId, documents]);
 
-  async function upload(file: File) {
+  async function upload(file: File, contentRange?: string) {
+    void contentRange;
     setUploading(true); setProgress(0); setError(undefined);
     try {
       const initialized = await api.initUpload(file);
