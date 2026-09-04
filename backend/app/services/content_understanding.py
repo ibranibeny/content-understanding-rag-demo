@@ -368,8 +368,10 @@ class ContentUnderstandingClient:
             "number": "valueNumber", "integer": "valueInteger", "boolean": "valueBoolean",
             "json": "valueJson", "array": "valueArray", "object": "valueObject",
         }.get(field_type)
-        if key is None or key not in field:
+        if key is None:
             raise ContentUnderstandingError("content_understanding_malformed", retryable=False)
+        if key not in field:
+            return None
         value = field[key]
         if field_type == "array":
             if not isinstance(value, list):
