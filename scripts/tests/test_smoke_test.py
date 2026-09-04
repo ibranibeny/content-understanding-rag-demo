@@ -60,6 +60,7 @@ def _make_transport(
     delete_status: int = 202,
     record: list[tuple[str, str]] | None = None,
     init_payloads: list[dict[str, object]] | None = None,
+    init_response: dict[str, object] | None = None,
 ) -> httpx.MockTransport:
     counters = {"status_gets": 0}
 
@@ -88,7 +89,7 @@ def _make_transport(
             assert body["fileName"] and body["sizeBytes"] > 0 and body["contentType"]
             return httpx.Response(
                 200,
-                json={
+                json=init_response or {
                     "uploadUrl": "https://blob.test/uploads/smoke?sig=redacted",
                     "documentId": DOCUMENT_ID,
                     "expiresAt": "2026-09-05T00:00:00Z",
@@ -288,6 +289,40 @@ def test_cleanup_failure_does_not_mask_polling_error(smoke_module: ModuleType) -
             smoke_module.make_sample_pdf(("x",)),
             sleep=lambda _s: None,
         )
+
+
+def test_document_id_with_missing_upload_url_is_deleted(smoke_module: ModuleType) -> None:
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(
+        record=record,
+        init_response={"documentId": DOCUMENT_ID, "requiredHeaders": {}},
+    )
+    config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND)
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="missing uploadUrl"
+    ):
+        smoke_module.run_smoke(client, config, b"pdf")
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
+
+
+def test_document_id_with_malformed_required_headers_is_deleted(
+    smoke_module: ModuleType,
+) -> None:
+    record: list[tuple[str, str]] = []
+    transport = _make_transport(
+        record=record,
+        init_response={
+            "documentId": DOCUMENT_ID,
+            "uploadUrl": "https://blob.test/uploads/smoke?sig=redacted",
+            "requiredHeaders": ["not-a-header-pair"],
+        },
+    )
+    config = smoke_module.SmokeConfig(api_base=API, frontend_origin=FRONTEND)
+    with _client(transport) as client, pytest.raises(
+        smoke_module.SmokeError, match="malformed requiredHeaders"
+    ):
+        smoke_module.run_smoke(client, config, b"pdf")
+    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
 
 
 def test_ranged_smoke_rejects_citation_outside_selected_pages(smoke_module: ModuleType) -> None:

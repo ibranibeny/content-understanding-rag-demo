@@ -208,19 +208,24 @@ def run_smoke(
     _require(init, 200, "upload init")
     init_body = init.json()
     document_id = init_body.get("documentId")
-    upload_url = init_body.get("uploadUrl")
-    if not document_id:
-        raise SmokeError("upload init response is missing documentId or uploadUrl")
-    document_id = str(document_id)
-    if not upload_url:
-        raise SmokeError("upload init response is missing documentId or uploadUrl")
-    required_headers = dict(init_body.get("requiredHeaders") or {})
+    if not isinstance(document_id, str) or not document_id:
+        raise SmokeError("upload init response is missing or has malformed documentId")
     state = ""
     citation_count = 0
     answer = ""
     citation_pages: tuple[int, ...] = ()
     deleted = False
     try:
+        upload_url = init_body.get("uploadUrl")
+        if not isinstance(upload_url, str) or not upload_url:
+            raise SmokeError("upload init response has missing uploadUrl or malformed uploadUrl")
+        required_headers_value = init_body.get("requiredHeaders")
+        if not isinstance(required_headers_value, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in required_headers_value.items()
+        ):
+            raise SmokeError("upload init response has malformed requiredHeaders")
+        required_headers = dict(required_headers_value)
         put = client.put(
             upload_url,
             content=pdf_bytes,
