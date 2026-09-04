@@ -49,6 +49,7 @@ export function DocumentUploader({ busy, progress, onUpload, onError }: Document
     }
     if (file.type !== "application/pdf") {
       onUpload(file, undefined);
+      if (input.current) input.current.value = "";
       return;
     }
     setPendingFile(file);

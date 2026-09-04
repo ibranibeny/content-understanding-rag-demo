@@ -20,6 +20,17 @@ function choose(selectedFile: File): void {
   fireEvent.change(screen.getByLabelText(/choose document file/i), { target: { files: [selectedFile] } });
 }
 
+function chooseWithNativeChangeSemantics(selectedFile: File): void {
+  const input = screen.getByLabelText(/choose document file/i) as HTMLInputElement;
+  if (input.value) return;
+  Object.defineProperty(input, "value", {
+    configurable: true,
+    writable: true,
+    value: `C:\\fakepath\\${selectedFile.name}`,
+  });
+  fireEvent.change(input, { target: { files: [selectedFile] } });
+}
+
 describe("DocumentUploader", () => {
   test.each([
     ["report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
@@ -34,6 +45,18 @@ describe("DocumentUploader", () => {
 
     expect(onUpload).toHaveBeenCalledWith(selectedFile, undefined);
     expect(screen.queryByRole("group", { name: /page scope/i })).not.toBeInTheDocument();
+  });
+
+  test("uploads the same non-PDF file when it is selected twice", () => {
+    const { onUpload } = renderUploader();
+    const selectedFile = file("report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+
+    chooseWithNativeChangeSemantics(selectedFile);
+    chooseWithNativeChangeSemantics(selectedFile);
+
+    expect(onUpload).toHaveBeenCalledTimes(2);
+    expect(onUpload).toHaveBeenNthCalledWith(1, selectedFile, undefined);
+    expect(onUpload).toHaveBeenNthCalledWith(2, selectedFile, undefined);
   });
 
   test("retains the supported-type validation", () => {
