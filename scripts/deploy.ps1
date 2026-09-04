@@ -203,7 +203,7 @@ if (-not $SkipBootstrap) {
     $env:SEARCH_INDEX_NAME = Require-Value -Map $envValues -Key 'SEARCH_INDEX_NAME'
     $env:CHAT_DEPLOYMENT = Require-Value -Map $envValues -Key 'CHAT_DEPLOYMENT'
     $env:EMBEDDING_DEPLOYMENT = Require-Value -Map $envValues -Key 'EMBEDDING_DEPLOYMENT'
-    $env:ANALYZER_ROUTER_ID = 'business-document-router'
+    $env:ANALYZER_ROUTER_ID = 'business_document_router'
     Invoke-Checked -What 'Data-plane bootstrap' -Action {
         uv --project backend run python scripts/bootstrap-data-plane.py
     }

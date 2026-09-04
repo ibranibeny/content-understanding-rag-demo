@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,23 +19,31 @@ def load(name: str) -> dict[str, Any]:
 def test_four_analyzers_have_exact_static_schemas() -> None:
     for category, expected_fields in EXPECTED.items():
         analyzer = load(category)
-        assert analyzer["analyzerId"] == f"workshop-{category}"
+        expected_id = f"workshop_{category.replace('-', '_')}"
+        assert analyzer["analyzerId"] == expected_id
+        assert re.fullmatch(r"[A-Za-z0-9._]{1,64}", analyzer["analyzerId"])
         assert analyzer["baseAnalyzerId"] == "prebuilt-document"
         assert analyzer["dynamicFieldSchema"] is False
         assert analyzer["config"]["returnDetails"] is True
         assert analyzer["config"]["tableFormat"] == "markdown"
+        assert analyzer["models"] == {
+            "completion": "gpt-5",
+            "embedding": "text-embedding-3-large",
+        }
         assert set(analyzer["fieldSchema"]["fields"]) == expected_fields
 
 
 def test_router_has_only_four_explicit_category_routes_without_segmentation() -> None:
     router = load("router")
     categories = router["config"]["contentCategories"]
-    assert router["analyzerId"] == "business-document-router"
+    assert router["analyzerId"] == "business_document_router"
+    assert re.fullmatch(r"[A-Za-z0-9._]{1,64}", router["analyzerId"])
     assert router["baseAnalyzerId"] == "prebuilt-document"
     assert router["dynamicFieldSchema"] is False
     assert router["config"]["enableSegment"] is False
     assert router["config"]["omitContent"] is True
+    assert router["models"] == {"completion": "gpt-5"}
     assert set(categories) == set(EXPECTED)
     for category, route in categories.items():
-        assert route["analyzerId"] == f"workshop-{category}"
+        assert route["analyzerId"] == f"workshop_{category.replace('-', '_')}"
         assert isinstance(route["description"], str) and 10 <= len(route["description"]) <= 160

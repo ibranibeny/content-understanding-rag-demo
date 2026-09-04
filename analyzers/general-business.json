@@ -1,8 +1,12 @@
 {
-  "analyzerId": "workshop-general-business",
+  "analyzerId": "workshop_general_business",
   "name": "General Business Document",
   "description": "Extracts the main facts and actions from a general business document.",
   "baseAnalyzerId": "prebuilt-document",
+  "models": {
+    "completion": "gpt-5",
+    "embedding": "text-embedding-3-large"
+  },
   "dynamicFieldSchema": false,
   "config": {
     "returnDetails": true,

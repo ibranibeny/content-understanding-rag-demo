@@ -34,7 +34,7 @@ param(
     [string]$EnvironmentName = 'cudemo',
     [hashtable]$EnvValues = @{},
     [switch]$SkipAzdLookup,
-    [string]$AnalyzerRouterId = 'business-document-router',
+    [string]$AnalyzerRouterId = 'business_document_router',
     [string]$RulesetName = 'main-protection'
 )
 
@@ -116,7 +116,7 @@ $values = if ($EnvValues.Count -gt 0) { $EnvValues } elseif ($SkipAzdLookup) { @
 
 $clientId = Resolve-Value -Map $values -Key 'GITHUB_IDENTITY_CLIENT_ID' -Explicit $AzureClientId
 $subId = Resolve-Value -Map $values -Key 'AZURE_SUBSCRIPTION_ID' -Explicit $AzureSubscriptionId
-$routerId = Resolve-Value -Map $values -Key 'ANALYZER_ROUTER_ID' -Explicit $AnalyzerRouterId -Default 'business-document-router'
+$routerId = Resolve-Value -Map $values -Key 'ANALYZER_ROUTER_ID' -Explicit $AnalyzerRouterId -Default 'business_document_router'
 
 Write-Host '==> Setting production variables (no secrets)' -ForegroundColor Cyan
 Set-EnvVariable -Name 'AZURE_CLIENT_ID'       -Value $clientId
