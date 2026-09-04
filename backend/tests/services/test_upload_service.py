@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 
+from app.core.config import Settings
 from app.core.errors import AppError, ConcurrencyConflict
 from app.domain.models import (
     DocumentRecord,
@@ -140,13 +141,20 @@ async def setup(
     blobs: Blobs | None = None,
     document_repository: MemoryDocumentRepository | None = None,
     backlog: Backlog | MemoryWorkQueue | None = None,
+    max_documents: int | None = None,
 ) -> tuple[UploadService, MemoryDocumentRepository, object, Blobs, Dispatcher]:
     repository = documents or MemoryApplicationRepository()
+    session_settings = (
+        Settings.model_validate({"max_documents": max_documents})
+        if max_documents is not None
+        else None
+    )
     session_service = SessionService(
         repository.sessions,
         Clock(),
         token_factory=lambda: TOKEN,
         session_documents=repository,
+        settings=session_settings,
     )
     await session_service.issue()
     actual_blobs = blobs or Blobs()
@@ -520,8 +528,8 @@ async def test_init_conflict_retries_transaction_without_persisting_duplicate_do
 
 
 async def test_init_enforces_session_quota() -> None:
-    service, _, _, _, _ = await setup()
-    for index in range(5):
+    service, _, _, _, _ = await setup(max_documents=2)
+    for index in range(2):
         service._document_id_factory = lambda index=index: UUID(int=index + 1)
         await service.initialize(
             SESSION_KEY,

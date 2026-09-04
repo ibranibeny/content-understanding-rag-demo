@@ -163,14 +163,20 @@ async def test_repository_enforces_create_and_replace_etags() -> None:
     assert replacement_etag != etag
 
 
-async def test_document_count_accepts_five_and_rejects_sixth() -> None:
-    service, _, _ = make_service()
+async def test_document_count_enforces_configured_limit() -> None:
+    repository = MemorySessionRepository()
+    service = SessionService(
+        repository,
+        MutableClock(),
+        settings=Settings.model_validate({"max_documents": 2}),
+        token_factory=lambda: TOKEN,
+    )
     issued = await service.issue()
 
-    for _ in range(5):
+    for _ in range(2):
         record = await service.reserve_document(issued.record.session_key, 1)
 
-    assert record.document_count == 5
+    assert record.document_count == 2
     with pytest.raises(AppError) as caught:
         await service.reserve_document(issued.record.session_key, 1)
     assert caught.value.code == "document_quota_exceeded"
