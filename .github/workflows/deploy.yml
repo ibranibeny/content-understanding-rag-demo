@@ -86,9 +86,9 @@ jobs:
           set -euo pipefail
           backend="$AZURE_CONTAINER_REGISTRY_ENDPOINT/backend:${GITHUB_SHA}"
           frontend="$AZURE_CONTAINER_REGISTRY_ENDPOINT/frontend:${GITHUB_SHA}"
-          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$API_CONTAINER_APP_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}"
-          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$WORKER_CONTAINER_APP_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}"
-          az containerapp job update -g "$AZURE_RESOURCE_GROUP" -n "$CLEANUP_JOB_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}"
+          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$API_CONTAINER_APP_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}" "ANALYZER_ROUTER_ID=${ANALYZER_ROUTER_ID}"
+          az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$WORKER_CONTAINER_APP_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}" "ANALYZER_ROUTER_ID=${ANALYZER_ROUTER_ID}"
+          az containerapp job update -g "$AZURE_RESOURCE_GROUP" -n "$CLEANUP_JOB_NAME" --image "$backend" --set-env-vars "RELEASE_SHA=${GITHUB_SHA}" "ANALYZER_ROUTER_ID=${ANALYZER_ROUTER_ID}"
           az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$FRONTEND_CONTAINER_APP_NAME" --image "$frontend" --set-env-vars "API_UPSTREAM=${API_URL}" "RELEASE_SHA=${GITHUB_SHA}"
       - name: Bootstrap Content Understanding and AI Search
         run: uv --project backend run python scripts/bootstrap-data-plane.py
