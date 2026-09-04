@@ -358,16 +358,6 @@ git commit -m "feat: normalize PDF page ranges in UI"
 
 ### Task 5: Add All, Start/End, and Advanced Upload UI
 
-**Execution research (2026-09-04):** Verified the requested linked worktree is on
-`feature/pdf-page-range` with a clean working tree. The existing uploader validates the approved
-PDF/DOCX/PPTX/PNG/JPEG MIME allowlist and 100 MB limit, then uploads every accepted file
-immediately. PDF range normalization is already available through `normalizeSimpleRange` and
-`normalizeAdvancedRange`; both enforce finite, 1-based selections with at most 300 unique pages.
-`layout.css` owns `.uploader`, and `App.tsx` is the sole uploader call site. This task is one bounded
-component state-machine change plus its callback wiring and scoped styles; API range propagation is
-intentionally deferred to Task 6. The existing console palette, compact geometry, visible global
-focus treatment, and responsive breakpoint will be retained.
-
 **Files:**
 - Modify: `frontend/src/features/documents/DocumentUploader.tsx`
 - Create: `frontend/src/features/documents/DocumentUploader.test.tsx`
