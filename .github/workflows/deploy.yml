@@ -94,21 +94,28 @@ jobs:
         run: |
           set -euo pipefail
           apps=("$API_CONTAINER_APP_NAME" "$WORKER_CONTAINER_APP_NAME" "$FRONTEND_CONTAINER_APP_NAME")
-          for attempt in $(seq 1 20); do
+          # Gate on the latest revision's provisioningState: reliable for scale-to-zero apps
+          # (runningState=ScaledToZero) and multiple-revision apps, unlike ready==latest equality.
+          for attempt in $(seq 1 30); do
             all_ready=true
             for app in "${apps[@]}"; do
-              revisions=$(az containerapp show -g "$AZURE_RESOURCE_GROUP" -n "$app" --query '[properties.latestReadyRevisionName,properties.latestRevisionName]' -o tsv)
-              read -r ready_revision latest_revision <<< "$revisions"
-              if [ -z "$ready_revision" ] || [ "$ready_revision" != "$latest_revision" ]; then
+              latest=$(az containerapp show -g "$AZURE_RESOURCE_GROUP" -n "$app" --query 'properties.latestRevisionName' -o tsv)
+              state=$(az containerapp revision show -g "$AZURE_RESOURCE_GROUP" -n "$app" --revision "$latest" --query 'properties.provisioningState' -o tsv)
+              if [ "$state" = "Failed" ]; then
+                echo "Container App revision failed to provision: ${app}/${latest}" >&2
+                exit 1
+              fi
+              if [ "$state" != "Provisioned" ]; then
                 all_ready=false
                 pending_app="$app"
+                pending_state="$state"
               fi
             done
             if [ "$all_ready" = true ]; then
               exit 0
             fi
-            if [ "$attempt" -eq 20 ]; then
-              echo "Container App revision did not become ready: ${pending_app}" >&2
+            if [ "$attempt" -eq 30 ]; then
+              echo "Container App revision did not become ready: ${pending_app} (provisioningState=${pending_state})" >&2
               exit 1
             fi
             sleep 5

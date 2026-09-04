@@ -27,7 +27,7 @@ param backendImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworl
 param releaseSha string = 'bootstrap'
 
 @description('gpt-5 GlobalStandard capacity in thousands of tokens per minute.')
-param gptCapacity int = 10
+param gptCapacity int = 100
 
 @description('text-embedding-3-large Standard capacity in thousands of tokens per minute.')
 param embeddingCapacity int = 30
