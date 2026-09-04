@@ -13,7 +13,7 @@ def test_settings_defaults_lock_required_models_and_limits() -> None:
     assert settings.embedding_deployment == "text-embedding-3-large"
     assert settings.embedding_dimensions == 3072
     assert settings.max_file_bytes == 100 * 1024 * 1024
-    assert settings.max_documents == 5
+    assert settings.max_documents == 1000
     assert settings.max_session_bytes == 500 * 1024 * 1024
     assert settings.max_questions_per_hour == 30
     assert settings.max_ingestion_backlog == 100
@@ -79,7 +79,6 @@ def test_settings_reject_nonpositive_counts_and_durations(field: str, value: int
     ("field", "value"),
     [
         ("max_file_bytes", 100 * 1024 * 1024 + 1),
-        ("max_documents", 6),
         ("max_session_bytes", 500 * 1024 * 1024 + 1),
         ("max_questions_per_hour", 31),
         ("max_ingestion_backlog", 10_001),

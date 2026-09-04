@@ -190,7 +190,8 @@ class Settings(BaseSettings):
         le=100 * 1024 * 1024,
         validation_alias="MAX_FILE_BYTES",
     )
-    max_documents: int = Field(default=5, gt=0, le=5, validation_alias="MAX_DOCUMENTS")
+    # Effectively unlimited for the workshop; total upload volume stays bounded by max_session_bytes.
+    max_documents: int = Field(default=1000, gt=0, validation_alias="MAX_DOCUMENTS")
     max_session_bytes: int = Field(
         default=500 * 1024 * 1024,
         gt=0,

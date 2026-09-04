@@ -42,7 +42,7 @@ def test_first_call_sets_cookie_and_returns_only_public_quota_dto() -> None:
     assert response.json() == {
         "expiresAt": "2026-09-04T10:00:00Z",
         "documentsUsed": 0,
-        "documentLimit": 5,
+        "documentLimit": 1000,
         "bytesUsed": 0,
         "byteLimit": 524288000,
         "questionsUsed": 0,
