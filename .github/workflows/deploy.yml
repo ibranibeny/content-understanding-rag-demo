@@ -97,7 +97,7 @@ jobs:
           SKIP_LIVE_MODEL: ${{ inputs.skipLiveModel }}
         run: |
           set -euo pipefail
-          args=(--api-base "$API_URL" --frontend-origin "$FRONTEND_URL")
+          args=(--api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL")
           if [ "${SKIP_LIVE_MODEL}" = "true" ]; then
             args+=(--skip-live-model)
           fi
