@@ -329,6 +329,22 @@ class ContentUnderstandingClient:
                 locators[name] = source
         pages = content.get("pages")
         if isinstance(pages, list):
+            previous_page_number = 0
+            for page in pages:
+                page_number = page.get("pageNumber") if isinstance(page, dict) else None
+                if (
+                    not isinstance(page_number, int)
+                    or isinstance(page_number, bool)
+                    or page_number <= previous_page_number
+                ):
+                    raise ContentUnderstandingError(
+                        "content_understanding_malformed", retryable=False
+                    )
+                previous_page_number = page_number
+            if not pages:
+                raise ContentUnderstandingError(
+                    "content_understanding_malformed", retryable=False
+                )
             page_count = len(pages)
         else:
             end_page = content.get("endPageNumber")
