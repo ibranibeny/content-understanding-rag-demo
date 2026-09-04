@@ -92,6 +92,19 @@ jobs:
           az containerapp update -g "$AZURE_RESOURCE_GROUP" -n "$FRONTEND_CONTAINER_APP_NAME" --image "$frontend" --set-env-vars "API_UPSTREAM=${API_URL}" "RELEASE_SHA=${GITHUB_SHA}"
       - name: Bootstrap Content Understanding and AI Search
         run: uv --project backend run python scripts/bootstrap-data-plane.py
+      - name: Wait for frontend API proxy
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error --max-time 2 "$FRONTEND_URL/api/session" > /dev/null; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              echo "Frontend API proxy did not become ready within 135 seconds." >&2
+              exit 1
+            fi
+            sleep 5
+          done
       - name: Smoke test
         env:
           SKIP_LIVE_MODEL: ${{ inputs.skipLiveModel }}
