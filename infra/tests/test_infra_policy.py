@@ -149,6 +149,18 @@ def test_required_resources_present(template: dict) -> None:
     } <= module_names
 
 
+def test_github_oidc_subject_uses_immutable_owner_and_repository_ids(
+    template: dict,
+) -> None:
+    github_identity = _res(template, "githubIdentity")
+    serialized = json.dumps(github_identity)
+    assert "https://token.actions.githubusercontent.com" in serialized
+    assert "api://AzureADTokenExchange" in serialized
+    assert "githubOwnerId" in serialized
+    assert "githubRepositoryId" in serialized
+    assert "environment:production" in serialized
+
+
 def test_storage_child_objects_present(template: dict) -> None:
     variables = template["variables"]
     assert [variables["uploadsContainer"], variables["derivedContainer"], variables["controlContainer"]] == [

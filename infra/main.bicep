@@ -41,6 +41,12 @@ param githubOwner string = ''
 @description('Optional GitHub repository. When both owner and repository are set, a deployment identity with an OIDC federated credential is created.')
 param githubRepository string = ''
 
+@description('Optional immutable GitHub owner numeric ID. Required with GitHub OIDC parameters.')
+param githubOwnerId string = ''
+
+@description('Optional immutable GitHub repository numeric ID. Required with GitHub OIDC parameters.')
+param githubRepositoryId string = ''
+
 @description('Extra tags applied to every resource.')
 param tags object = {}
 
@@ -51,7 +57,7 @@ param tags object = {}
 var resourceToken = toLower(uniqueString(subscription().id, resourceGroup().id, environmentName))
 var commonTags = union(tags, { 'azd-env-name': environmentName })
 
-var enableGitHub = !empty(githubOwner) && !empty(githubRepository)
+var enableGitHub = !empty(githubOwner) && !empty(githubRepository) && !empty(githubOwnerId) && !empty(githubRepositoryId)
 var enableBootstrap = !empty(deploymentPrincipalId)
 
 // Resource names.
@@ -182,7 +188,7 @@ module githubIdentity 'br/public:avm/res/managed-identity/user-assigned-identity
         name: 'github-actions-production'
         audiences: ['api://AzureADTokenExchange']
         issuer: 'https://token.actions.githubusercontent.com'
-        subject: 'repo:${githubOwner}/${githubRepository}:environment:production'
+        subject: 'repo:${githubOwner}@${githubOwnerId}/${githubRepository}@${githubRepositoryId}:environment:production'
       }
     ]
   }
