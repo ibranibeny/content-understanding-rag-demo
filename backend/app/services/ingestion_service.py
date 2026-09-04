@@ -32,7 +32,12 @@ POLL_DELAYS = (1.0, 2.0, 4.0, 8.0, 15.0, 30.0, 30.0, 30.0)
 
 
 class ContentClient(Protocol):
-    async def start_analysis(self, blob_url: str, analyzer_id: str) -> Any: ...
+    async def start_analysis(
+        self,
+        blob_url: str,
+        analyzer_id: str,
+        content_range: str | None = None,
+    ) -> Any: ...
     async def get_result(self, operation_url: str) -> Mapping[str, Any]: ...
     async def delete_result(self, result_id: str) -> None: ...
 
@@ -132,7 +137,11 @@ class IngestionService:
             lease.ensure_valid()
             read_url = await self._blobs.create_read_url(document.blob_name or message.blob_name,
                                                          self._clock.now() + timedelta(minutes=15))
-            started = await self._content.start_analysis(read_url, self._analyzer_id)
+            started = await self._content.start_analysis(
+                read_url,
+                self._analyzer_id,
+                document.content_range,
+            )
             current = await self._transition(
                 current, DocumentState.ANALYZING,
                 content_result_id=str(started.result_id),

@@ -63,14 +63,22 @@ class Blobs:
 
 class ContentUnderstanding:
     def __init__(self) -> None:
-        self.begin_calls = 0
+        self.start_calls: list[tuple[str, str, str | None]] = []
         self.get_calls = 0
         self.deleted_result_ids: list[str] = []
         self.delete_error: ContentUnderstandingError | None = None
 
-    async def start_analysis(self, blob_url: str, analyzer_id: str):  # type: ignore[no-untyped-def]
-        del blob_url, analyzer_id
-        self.begin_calls += 1
+    @property
+    def begin_calls(self) -> int:
+        return len(self.start_calls)
+
+    async def start_analysis(  # type: ignore[no-untyped-def]
+        self,
+        blob_url: str,
+        analyzer_id: str,
+        content_range: str | None = None,
+    ):
+        self.start_calls.append((blob_url, analyzer_id, content_range))
         return type("Started", (), {"result_id": "result-1", "operation_url": "https://cu/op/1"})()
 
     async def get_result(self, operation_url: str) -> dict[str, Any]:
@@ -162,13 +170,26 @@ async def test_happy_path_reaches_exact_states_after_result_delete() -> None:
     assert blobs.values
 
 
+async def test_pdf_analysis_uses_current_persisted_content_range() -> None:
+    service, _, _, cu, _ = await harness(record(content_range="301-600"))
+
+    await service.process(message())
+
+    assert cu.start_calls == [
+        ("https://blob.example/input?sig=redacted", "router", "301-600")
+    ]
+
+
 async def test_redelivery_resumes_existing_operation_without_new_analysis() -> None:
     service, repo, _, cu, _ = await harness(record(state=DocumentState.ANALYZING,
-        content_result_id="result-1", content_operation_url="https://cu/op/1"))
+        content_range="301-600", content_result_id="result-1",
+        content_operation_url="https://cu/op/1"))
     await service.process(message())
     assert cu.begin_calls == 0
     assert cu.get_calls >= 1
-    assert (await repo.get(SESSION, DOCUMENT)).value.state is DocumentState.READY  # type: ignore[union-attr]
+    stored = await repo.get(SESSION, DOCUMENT)
+    assert stored is not None and stored.value.state is DocumentState.READY
+    assert stored.value.content_range == "301-600"
 
 
 async def test_chunking_resume_reads_normalized_blob_and_never_analyzes() -> None:
