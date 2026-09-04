@@ -181,6 +181,37 @@ async def test_normal_failure_attempt_five_marks_failed_and_sends_sanitized_pois
     assert "sig=" not in poison.poison[0]
 
 
+def test_safe_failure_classifies_transient_infra_errors_as_retryable() -> None:
+    from azure.core.exceptions import (
+        HttpResponseError,
+        ServiceRequestError,
+        ServiceResponseError,
+    )
+
+    from app.core.errors import RepositoryUnavailableError
+    from app.worker import _safe_failure
+
+    assert _safe_failure(RepositoryUnavailableError()) == ("dependency_unavailable", True, None)
+    assert _safe_failure(ServiceRequestError("x")) == ("dependency_unavailable", True, None)
+    assert _safe_failure(ServiceResponseError("x")) == ("dependency_unavailable", True, None)
+    assert _safe_failure(TimeoutError()) == ("dependency_unavailable", True, None)
+    for status in (408, 429, 500, 502, 503, 504):
+        error = HttpResponseError()
+        error.status_code = status
+        assert _safe_failure(error) == ("dependency_unavailable", True, None)
+
+
+def test_safe_failure_keeps_permanent_errors_non_retryable() -> None:
+    from azure.core.exceptions import HttpResponseError
+
+    from app.worker import _safe_failure
+
+    rejected = HttpResponseError()
+    rejected.status_code = 400
+    assert _safe_failure(rejected) == ("ingestion_failed", False, None)
+    assert _safe_failure(ValueError("boom")) == ("ingestion_failed", False, None)
+
+
 class Documents:
     def __init__(self) -> None:
         self.cleared = False
