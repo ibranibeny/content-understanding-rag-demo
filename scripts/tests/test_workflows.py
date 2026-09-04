@@ -178,10 +178,11 @@ def test_deploy_runs_bootstrap_and_smoke_via_backend_uv() -> None:
     assert "scripts/smoke_test.py" in text, "deploy must run the deployed smoke test"
     assert "Wait for frontend API proxy" in text
     assert '"$FRONTEND_URL/api/session"' in text
-    assert "for attempt in" in text, "frontend proxy wait must be bounded"
-    attempts = int(re.search(r"seq 1 (\d+)", text).group(1))
-    request_timeout = int(re.search(r"--max-time (\d+)", text).group(1))
-    retry_delay = int(re.search(r"sleep (\d+)", text).group(1))
+    proxy_step = text[text.index("- name: Wait for frontend API proxy") : text.index("- name: Smoke test")]
+    assert "for attempt in" in proxy_step, "frontend proxy wait must be bounded"
+    attempts = int(re.search(r"seq 1 (\d+)", proxy_step).group(1))
+    request_timeout = int(re.search(r"--max-time (\d+)", proxy_step).group(1))
+    retry_delay = int(re.search(r"sleep (\d+)", proxy_step).group(1))
     assert attempts * request_timeout + (attempts - 1) * retry_delay <= 135
     assert '--api-base "$FRONTEND_URL"' in text, (
         "the release smoke must exercise the public frontend /api proxy"
@@ -196,11 +197,13 @@ def test_deploy_waits_for_all_container_app_revisions_before_bootstrap_and_smoke
     readiness_step = text[readiness_start:bootstrap_start]
 
     assert readiness_start < bootstrap_start < smoke_start
-    assert "for attempt in $(seq 1 20)" in readiness_step
+    assert "for attempt in $(seq 1 30)" in readiness_step
     assert "sleep 5" in readiness_step
     assert "az containerapp show" in readiness_step
-    assert "properties.latestReadyRevisionName" in readiness_step
+    assert "az containerapp revision show" in readiness_step
     assert "properties.latestRevisionName" in readiness_step
+    assert "properties.provisioningState" in readiness_step
+    assert "Provisioned" in readiness_step
     for app_name in (
         "API_CONTAINER_APP_NAME",
         "WORKER_CONTAINER_APP_NAME",
