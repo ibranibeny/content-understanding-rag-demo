@@ -9,7 +9,7 @@ Allow workshop users to upload a PDF once and choose which pages Azure Content U
 - Add PDF-only page scope controls to the upload flow.
 - Support a simple inclusive start/end range and an advanced comma-separated range.
 - Persist the normalized range with the document so retries and queue redelivery use the same selection.
-- Pass the selection to Azure Content Understanding as the input `contentRange`.
+- Pass the selection to Azure Content Understanding as the input `range` while retaining `contentRange` in the public app contract.
 - Display the selected range in document details.
 - Preserve existing behavior for Office documents and images.
 
@@ -51,9 +51,9 @@ The backend is authoritative and applies the same validation. The frontend valid
 `ContentUnderstandingClient.start_analysis()` gains an optional range and emits one input object:
 
 - Without a range: `{ "url": "..." }`
-- With a range: `{ "url": "...", "contentRange": "1-3,5" }`
+- With a range: `{ "url": "...", "range": "1-3,5" }`
 
-Microsoft defines `contentRange` as 1-based for documents and supports forms such as `1-3,5,9-`. This workshop intentionally accepts only finite ranges so it can enforce the 300-page limit before service submission.
+The public API, persistence model, and frontend continue to use `contentRange`; only the Azure REST adapter translates it to the 2025-11-01 AnalysisInput property `range`. Microsoft defines this range as 1-based for documents and supports forms such as `1-3,5,9-`. This workshop intentionally accepts only finite ranges so it can enforce the 300-page limit before service submission.
 
 ## Processing and Failure Handling
 
@@ -82,7 +82,7 @@ Existing persisted entities without `contentRange` deserialize as all pages beca
 
 - Unit tests for canonical parsing, invalid syntax, ordering, overlap, duplicates, and the 300-page boundary.
 - Upload API tests for optional serialization, PDF-only enforcement, normalization, persistence, and unknown-field safety.
-- Content Understanding client tests for request JSON with and without `contentRange`.
+- Content Understanding client tests for exact request JSON with and without the REST `range` property while the app contract remains `contentRange`.
 - Ingestion tests proving the persisted range reaches `start_analysis()` and redelivery preserves it.
 - Model and repository compatibility tests for old records without the field.
 
@@ -108,6 +108,6 @@ Existing persisted entities without `contentRange` deserialize as all pages beca
 2. Invalid or over-300 selections are rejected before upload.
 3. Non-PDF behavior is unchanged and cannot submit a page range.
 4. The canonical selection is persisted, returned, displayed, and reused for retries.
-5. Content Understanding receives the exact canonical `contentRange`.
+5. Content Understanding receives the exact canonical value through the REST `range` property while the public app contract remains `contentRange`.
 6. Existing records and clients remain compatible.
 7. CI, CodeQL, deployment, and production range smoke pass without secrets, local builds, or ACR Tasks.

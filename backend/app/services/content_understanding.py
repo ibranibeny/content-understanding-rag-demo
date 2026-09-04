@@ -165,7 +165,7 @@ class ContentUnderstandingClient:
     ) -> AnalysisStart:
         input_value = {"url": blob_url}
         if content_range is not None:
-            input_value["contentRange"] = content_range
+            input_value["range"] = content_range
         response = await self._request(
             "POST",
             f"/contentunderstanding/analyzers/{quote(self._analyzer_identifier(analyzer_id), safe='')}:analyze",
