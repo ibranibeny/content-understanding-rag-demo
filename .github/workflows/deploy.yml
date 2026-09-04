@@ -114,5 +114,5 @@ jobs:
           if [ "${SKIP_LIVE_MODEL}" = "true" ]; then
             args+=(--skip-live-model)
           fi
-          uv --project backend run python scripts/smoke_test.py --api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL" "${args[@]}"
-          uv --project backend run python scripts/smoke_test.py --api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL" "${args[@]}" --generated-pages 3 --content-range 2-3 --expect-pages 2
+          uv --project backend run python scripts/smoke_test.py --api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL" --skip-live-model
+          uv --project backend run python scripts/smoke_test.py --api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL" "${args[@]}" --generated-pages 3 --content-range 2-3 --expect-pages 2 --question "What unique marker is printed on page 2?" --expect "ORBIT-BRAVO-2"

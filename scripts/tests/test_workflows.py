@@ -188,18 +188,23 @@ def test_deploy_runs_bootstrap_and_smoke_via_backend_uv() -> None:
     )
 
 
-def test_deploy_runs_full_and_ranged_production_smokes() -> None:
+def test_deploy_runs_preliminary_then_exactly_one_full_ranged_production_smoke() -> None:
     text = _read("deploy.yml")
     smoke_commands = re.findall(r"uv --project backend run python scripts/smoke_test\.py[^\n]+", text)
-    assert len(smoke_commands) == 2, "deploy must run the full and ranged production smokes"
+    assert len(smoke_commands) == 2, "deploy must run preliminary and ranged production smokes"
     assert all('--api-base "$FRONTEND_URL"' in command for command in smoke_commands)
     assert all('--frontend-origin "$FRONTEND_URL"' in command for command in smoke_commands)
     ranged = next(command for command in smoke_commands if "--content-range" in command)
+    preliminary = next(command for command in smoke_commands if "--content-range" not in command)
+    assert "--skip-live-model" in preliminary
+    assert '"${args[@]}"' not in preliminary
     assert "--generated-pages 3" in ranged
     assert "--content-range 2-3" in ranged
     assert "--expect-pages 2" in ranged
+    assert "--question" in ranged
+    assert "--expect" in ranged
     assert text.count("args+=(--skip-live-model)") == 1
-    assert all('"${args[@]}"' in command for command in smoke_commands)
+    assert '"${args[@]}"' in ranged
 
 
 # --- Supporting delivery configuration ---------------------------------------
