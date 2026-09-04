@@ -215,6 +215,21 @@ async def test_busy_writer_keeps_deleting_then_next_sweep_completes_and_clears_c
         assert sensitive not in persisted
 
 
+async def test_completed_deletion_clears_content_range() -> None:
+    service, repository, _, _ = await make_service(
+        record().model_copy(update={"content_range": "pages=2-4"})
+    )
+    await service.request_delete(SESSION, DOC, NOW)
+
+    result = await service.sweep_pending(NOW, 10)
+
+    current = (await repository.get(SESSION, DOC)).value  # type: ignore[union-attr]
+    assert result.deleted == 1
+    assert current.state is DocumentState.DELETED
+    assert current.content_range is None
+    assert "pages=2-4" not in repository.persisted_text_for_test()
+
+
 @pytest.mark.parametrize("failing", ["blob", "search"])
 async def test_transient_artifact_failure_stays_deleting(failing: str) -> None:
     service, repository, blobs, search = await make_service(record())
