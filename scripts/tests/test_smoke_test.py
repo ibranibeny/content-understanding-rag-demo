@@ -57,6 +57,7 @@ def _make_transport(
     page_count: int = 1,
     with_citation: bool = True,
     citation_source_locator: str = "page-1",
+    answer: str = "Contoso revenue for Q3 2026 was 4,200,000 USD ",
     delete_status: int = 202,
     record: list[tuple[str, str]] | None = None,
     init_payloads: list[dict[str, object]] | None = None,
@@ -111,6 +112,7 @@ def _make_transport(
                 headers={"content-type": "text/event-stream"},
                 content=_sse_body(
                     with_citation,
+                    answer=answer,
                     source_locator=citation_source_locator,
                 ),
             )
@@ -186,20 +188,23 @@ def test_range_is_sent_and_expected_ready_page_count_matches(smoke_module: Modul
     transport = _make_transport(
         page_count=2,
         init_payloads=init_payloads,
-        citation_source_locator="page 2",
+        citation_source_locator="opaque-section-7",
+        answer="The unique marker is ORBIT-BRAVO-2 [S1].",
     )
     config = smoke_module.SmokeConfig(
         api_base=API,
         frontend_origin=FRONTEND,
         content_range="2-3",
         expected_page_count=2,
+        expect_substring="ORBIT-BRAVO-2",
         poll_interval=0.0,
     )
     pdf = smoke_module.make_sample_pdf(smoke_module.SAMPLE_LINES, page_count=3)
     with _client(transport) as client:
         result = smoke_module.run_smoke(client, config, pdf, sleep=lambda _s: None)
     assert result.final_state == "ready"
-    assert result.citation_page_numbers == (2,)
+    assert result.citation_count == 1
+    assert result.answer.startswith("The unique marker is ORBIT-BRAVO-2")
     assert init_payloads[0]["contentRange"] == "2-3"
 
 
@@ -325,37 +330,12 @@ def test_document_id_with_malformed_required_headers_is_deleted(
     assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
 
 
-def test_ranged_smoke_rejects_citation_outside_selected_pages(smoke_module: ModuleType) -> None:
-    record: list[tuple[str, str]] = []
-    transport = _make_transport(
-        page_count=2,
-        citation_source_locator="page 1",
-        record=record,
-    )
-    config = smoke_module.SmokeConfig(
-        api_base=API,
-        frontend_origin=FRONTEND,
-        content_range="2-3",
-        expected_page_count=2,
-    )
-    with _client(transport) as client, pytest.raises(
-        smoke_module.SmokeError, match="outside selected range"
-    ):
-        smoke_module.run_smoke(
-            client,
-            config,
-            smoke_module.make_sample_pdf(smoke_module.SAMPLE_LINES, page_count=3),
-            sleep=lambda _s: None,
-        )
-    assert record.count(("DELETE", f"/api/documents/{DOCUMENT_ID}")) == 1
-
-
 def test_cli_configures_generated_ranged_pdf(smoke_module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_run_smoke(client: httpx.Client, config: object, pdf_bytes: bytes) -> object:
         captured.update(config=config, pdf_bytes=pdf_bytes)
-        return smoke_module.SmokeResult(DOCUMENT_ID, "ready", 1, "answer", (2,), True)
+        return smoke_module.SmokeResult(DOCUMENT_ID, "ready", 1, "answer", True)
 
     monkeypatch.setattr(smoke_module, "run_smoke", fake_run_smoke)
     exit_code = smoke_module.main(
@@ -383,7 +363,7 @@ def test_cli_accepts_composite_generated_pdf_range(
 
     def fake_run_smoke(client: httpx.Client, config: object, pdf_bytes: bytes) -> object:
         captured["config"] = config
-        return smoke_module.SmokeResult(DOCUMENT_ID, "ready", 1, "answer", (2,), True)
+        return smoke_module.SmokeResult(DOCUMENT_ID, "ready", 1, "answer", True)
 
     monkeypatch.setattr(smoke_module, "run_smoke", fake_run_smoke)
     exit_code = smoke_module.main(
