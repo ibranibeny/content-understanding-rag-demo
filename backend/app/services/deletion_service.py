@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from app.services.blob_service import DocumentLeaseBusy, DocumentLeaseLost
 
 TOMBSTONE_RETENTION = timedelta(hours=48)
 MAX_ETAG_RETRIES = 5
+logger = logging.getLogger(__name__)
 
 
 class TombstonedDocument(Exception):
@@ -33,10 +35,12 @@ class DeletionService:
         repository: DocumentRepository,
         blobs: BlobStore,
         search: ChunkSearch,
+        release_quota: Callable[[str, int], Awaitable[object]] | None = None,
     ) -> None:
         self._repository = repository
         self._blobs = blobs
         self._search = search
+        self._release_quota = release_quota
 
     @staticmethod
     def _not_found() -> AppError:
@@ -60,15 +64,26 @@ class DeletionService:
                 }
             )
             try:
-                return await self._repository.replace(tombstone, current.etag)
+                tombstoned = await self._repository.replace(tombstone, current.etag)
             except ConcurrencyConflict:
                 continue
+            await self._free_quota(session_key, current.value.size_bytes)
+            return tombstoned
         raise AppError(
             "document_update_conflict",
             409,
             "The document changed. Retry the request.",
             True,
         )
+
+    async def _free_quota(self, session_key: str, size: int | None) -> None:
+        # Frees the session document/byte reservation once, at the transition to DELETING.
+        if self._release_quota is None or size is None or size <= 0:
+            return
+        try:
+            await self._release_quota(session_key, size)
+        except AppError:
+            logger.warning("quota_release_failed session=%s", session_key)
 
     async def guard_not_tombstoned(
         self, session_key: str, document_id: UUID, lease: DocumentLease

@@ -480,6 +480,7 @@ def create_app(
             documents,
             actual_upload_service.blobs,  # type: ignore[arg-type]
             dependencies.chunk_search if dependencies is not None else MemoryChunkSearch(),
+            release_quota=actual_session_service.release_document,
         )
         actual_document_service = DocumentService(
             documents, actual_deletion_service, actual_dispatcher, clock
