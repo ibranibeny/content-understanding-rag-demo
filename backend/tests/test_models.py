@@ -14,6 +14,7 @@ from app.domain.models import (
     DocumentRecord,
     DocumentResponse,
     DocumentState,
+    DocumentSummaryResponse,
     IngestionMessage,
     OutboxRecord,
     RetrievedEvidence,
@@ -473,6 +474,37 @@ def test_all_api_dtos_validate_aliases_and_serialize_camel_case_by_default() -> 
         }
     )
     assert parsed.document_ids == (DOCUMENT_ID,)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        UploadInitRequest(
+            file_name="file.pdf",
+            content_type="application/pdf",
+            size_bytes=100,
+            content_range="1-3,5",
+        ),
+        DocumentRecord.model_validate(document_record(contentRange="1-3,5")),
+        DocumentResponse.model_validate(document_response(contentRange="1-3,5")),
+        DocumentSummaryResponse.model_validate(document_response(contentRange="1-3,5")),
+    ],
+)
+def test_content_range_contracts_accept_and_serialize_camel_case(model: BaseModel) -> None:
+    assert model.content_range == "1-3,5"  # type: ignore[attr-defined]
+    assert model.model_dump()["contentRange"] == "1-3,5"
+
+
+def test_content_range_defaults_to_none_without_changing_ingestion_message() -> None:
+    assert UploadInitRequest(
+        file_name="file.pdf", content_type="application/pdf", size_bytes=100
+    ).content_range is None
+    assert DocumentRecord.model_validate(document_record()).content_range is None
+    assert DocumentResponse.model_validate(document_response()).content_range is None
+    assert DocumentSummaryResponse.model_validate(document_response()).content_range is None
+
+    with pytest.raises(ValidationError):
+        IngestionMessage.model_validate(ingestion_message(contentRange="1-3"))
 
 
 @pytest.mark.parametrize(

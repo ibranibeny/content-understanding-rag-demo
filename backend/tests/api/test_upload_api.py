@@ -139,6 +139,87 @@ def test_init_rotates_cookie_and_returns_exact_safe_shape() -> None:
     assert TOKEN.decode() not in stored
 
 
+def test_init_normalizes_and_persists_pdf_content_range_without_exposing_it_in_response() -> None:
+    client, documents = make_client()
+
+    response = client.post(
+        "/api/uploads/init",
+        headers=VALID_ORIGIN,
+        json={
+            "fileName": "a.pdf",
+            "contentType": "application/pdf",
+            "sizeBytes": 8,
+            "contentRange": " 01 - 003, 5 ",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "contentRange" not in response.json()
+    stored = documents._state.documents[(SESSION_KEY, str(DOCUMENT_ID))][0]
+    assert stored.content_range == "1-3,5"
+
+
+@pytest.mark.parametrize("content_range", ["1,,2", "1-3,3-5", "1-301"])
+def test_init_rejects_invalid_pdf_content_ranges(content_range: str) -> None:
+    client, documents = make_client()
+
+    response = client.post(
+        "/api/uploads/init",
+        headers=VALID_ORIGIN,
+        json={
+            "fileName": "a.pdf",
+            "contentType": "application/pdf",
+            "sizeBytes": 8,
+            "contentRange": content_range,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "invalid_content_range",
+        "message": "Choose 1 to 300 pages using values such as 1-3,5,9-12.",
+        "retryable": False,
+        "correlationId": response.headers["x-correlation-id"],
+    }
+    assert documents.persisted_text_for_test() == ""
+
+
+@pytest.mark.parametrize(
+    ("file_name", "content_type"),
+    [
+        ("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("a.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        ("a.png", "image/png"),
+        ("a.jpg", "image/jpeg"),
+        ("a.jpeg", "image/jpeg"),
+    ],
+)
+def test_init_rejects_content_range_for_every_supported_non_pdf_type(
+    file_name: str, content_type: str
+) -> None:
+    client, documents = make_client()
+
+    response = client.post(
+        "/api/uploads/init",
+        headers=VALID_ORIGIN,
+        json={
+            "fileName": file_name,
+            "contentType": content_type,
+            "sizeBytes": 8,
+            "contentRange": "1-3",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "code": "content_range_not_supported",
+        "message": "Page selection is supported only for PDF files.",
+        "retryable": False,
+        "correlationId": response.headers["x-correlation-id"],
+    }
+    assert documents.persisted_text_for_test() == ""
+
+
 @pytest.mark.parametrize(
     "file_name",
     [

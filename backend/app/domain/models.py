@@ -87,6 +87,7 @@ class DocumentRecord(ContractModel):
     document_id: UUID
     file_name: str | None
     content_type: str | None
+    content_range: str | None = None
     size_bytes: int | None = Field(ge=0)
     blob_name: str | None
     state: DocumentState
@@ -214,6 +215,7 @@ class UploadInitRequest(ContractModel):
     file_name: str
     content_type: str
     size_bytes: int = Field(gt=0)
+    content_range: str | None = None
 
 
 class UploadInitResponse(ContractModel):
@@ -231,6 +233,7 @@ class DocumentResponse(ContractModel):
     document_id: UUID
     file_name: str
     state: DocumentState
+    content_range: str | None = Field(default=None, exclude_if=lambda value: value is None)
     document_type: str | None = None
     title: str | None = None
     page_count: int | None = None
@@ -249,6 +252,7 @@ class DocumentSummaryResponse(ContractModel):
     document_id: UUID
     file_name: str
     state: DocumentState
+    content_range: str | None = Field(default=None, exclude_if=lambda value: value is None)
     document_type: str | None = None
     title: str | None = None
     page_count: int | None = None
