@@ -328,10 +328,11 @@ class ContentUnderstandingClient:
             if isinstance(source, str):
                 locators[name] = source
         pages = content.get("pages")
-        page_count = len(pages) if isinstance(pages, list) else 0
-        end_page = content.get("endPageNumber")
-        if isinstance(end_page, int):
-            page_count = max(page_count, end_page)
+        if isinstance(pages, list):
+            page_count = len(pages)
+        else:
+            end_page = content.get("endPageNumber")
+            page_count = end_page if isinstance(end_page, int) else 0
         return NormalizedAnalysis(
             category=category,
             markdown=markdown,
