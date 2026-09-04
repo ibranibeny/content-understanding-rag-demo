@@ -188,6 +188,20 @@ def test_deploy_runs_bootstrap_and_smoke_via_backend_uv() -> None:
     )
 
 
+def test_deploy_runs_full_and_ranged_production_smokes() -> None:
+    text = _read("deploy.yml")
+    smoke_commands = re.findall(r"uv --project backend run python scripts/smoke_test\.py[^\n]+", text)
+    assert len(smoke_commands) == 2, "deploy must run the full and ranged production smokes"
+    assert all('--api-base "$FRONTEND_URL"' in command for command in smoke_commands)
+    assert all('--frontend-origin "$FRONTEND_URL"' in command for command in smoke_commands)
+    ranged = next(command for command in smoke_commands if "--content-range" in command)
+    assert "--generated-pages 3" in ranged
+    assert "--content-range 2-3" in ranged
+    assert "--expect-pages 2" in ranged
+    assert text.count("args+=(--skip-live-model)") == 1
+    assert all('"${args[@]}"' in command for command in smoke_commands)
+
+
 # --- Supporting delivery configuration ---------------------------------------
 def test_copilot_instructions_and_configure_script_exist() -> None:
     assert (REPO_ROOT / ".github" / "copilot-instructions.md").is_file()

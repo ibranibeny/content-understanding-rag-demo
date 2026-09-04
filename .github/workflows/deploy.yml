@@ -110,8 +110,9 @@ jobs:
           SKIP_LIVE_MODEL: ${{ inputs.skipLiveModel }}
         run: |
           set -euo pipefail
-          args=(--api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL")
+          args=()
           if [ "${SKIP_LIVE_MODEL}" = "true" ]; then
             args+=(--skip-live-model)
           fi
-          uv --project backend run python scripts/smoke_test.py "${args[@]}"
+          uv --project backend run python scripts/smoke_test.py --api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL" "${args[@]}"
+          uv --project backend run python scripts/smoke_test.py --api-base "$FRONTEND_URL" --frontend-origin "$FRONTEND_URL" "${args[@]}" --generated-pages 3 --content-range 2-3 --expect-pages 2

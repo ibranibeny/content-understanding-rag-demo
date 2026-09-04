@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -53,6 +54,8 @@ class SmokeConfig:
     content_type: str = "application/pdf"
     question: str = SAMPLE_QUESTION
     expect_substring: str | None = None
+    content_range: str | None = None
+    expected_page_count: int | None = None
     skip_live_model: bool = False
     ready_timeout: float = 300.0
     poll_interval: float = 5.0
@@ -67,8 +70,10 @@ class SmokeResult:
     deleted: bool
 
 
-def make_sample_pdf(lines: Sequence[str]) -> bytes:
-    """Build a minimal, valid, text-bearing single-page PDF with a correct cross-reference table."""
+def make_sample_pdf(lines: Sequence[str], page_count: int = 1) -> bytes:
+    """Build a valid text-bearing PDF with the requested pages and a correct xref table."""
+    if page_count < 1:
+        raise ValueError("page_count must be at least 1")
 
     def escape(value: str) -> str:
         return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
@@ -80,17 +85,34 @@ def make_sample_pdf(lines: Sequence[str]) -> bytes:
         ops.append(f"({escape(line)}) Tj")
     ops.append("ET")
     stream = "\n".join(ops).encode("ascii")
-
+    page_numbers = [4 + index * 2 for index in range(page_count)]
     bodies: list[bytes] = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+            b"<< /Type /Pages /Kids ["
+            + b" ".join(f"{number} 0 R".encode("ascii") for number in page_numbers)
+            + f"] /Count {page_count} >>".encode("ascii")
         ),
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
     ]
+    for page_number in page_numbers:
+        content_number = page_number + 1
+        bodies.extend(
+            [
+                (
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                    b"/Resources << /Font << /F1 3 0 R >> >> /Contents "
+                    + f"{content_number} 0 R >>".encode("ascii")
+                ),
+                (
+                    b"<< /Length "
+                    + str(len(stream)).encode("ascii")
+                    + b" >>\nstream\n"
+                    + stream
+                    + b"\nendstream"
+                ),
+            ]
+        )
     out = bytearray(b"%PDF-1.4\n")
     offsets: list[int] = []
     for number, body in enumerate(bodies, start=1):
@@ -154,14 +176,17 @@ def run_smoke(
 
     _require(client.get("/api/session"), 200, "session")
 
+    init_payload: dict[str, str | int] = {
+        "fileName": config.file_name,
+        "contentType": config.content_type,
+        "sizeBytes": len(pdf_bytes),
+    }
+    if config.content_range is not None:
+        init_payload["contentRange"] = config.content_range
     init = client.post(
         "/api/uploads/init",
         headers=origin,
-        json={
-            "fileName": config.file_name,
-            "contentType": config.content_type,
-            "sizeBytes": len(pdf_bytes),
-        },
+        json=init_payload,
     )
     _require(init, 200, "upload init")
     init_body = init.json()
@@ -218,8 +243,16 @@ def _poll_until_ready(
     while True:
         response = client.get(f"/api/documents/{document_id}")
         _require(response, 200, "document status")
-        last_state = str(response.json().get("state", "unknown"))
+        body = response.json()
+        last_state = str(body.get("state", "unknown"))
         if last_state == "ready":
+            if config.expected_page_count is not None:
+                actual_page_count = body.get("pageCount")
+                if actual_page_count != config.expected_page_count:
+                    raise SmokeError(
+                        f"expected {config.expected_page_count} processed pages, "
+                        f"got {actual_page_count!r}"
+                    )
             return last_state
         if last_state in {"failed", "deleting", "deleted"}:
             raise SmokeError(f"document reached terminal state {last_state!r} before ready")
@@ -279,6 +312,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--file", default=None, help="Optional path to a supplied document to upload")
     parser.add_argument("--question", default=None, help="Grounded question to ask")
     parser.add_argument("--expect", default=None, help="Optional substring the answer must contain")
+    parser.add_argument("--content-range", default=None, help="PDF page range to process, for example 2-3")
+    parser.add_argument("--expect-pages", type=int, default=None, help="Expected processed page count")
+    parser.add_argument("--generated-pages", type=int, default=1, help="Pages in the generated sample PDF")
     parser.add_argument("--timeout", type=float, default=300.0, help="Readiness timeout in seconds")
     parser.add_argument("--poll-interval", type=float, default=5.0, help="Readiness poll interval")
     parser.add_argument(
@@ -289,8 +325,48 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _validate_page_options(args: argparse.Namespace, file_name: str | None) -> str | None:
+    if args.generated_pages < 1:
+        return "--generated-pages must be at least 1"
+    if args.expect_pages is not None and args.expect_pages < 1:
+        return "--expect-pages must be at least 1"
+    if args.content_range is not None:
+        selected_pages: set[int] = set()
+        for token in args.content_range.split(","):
+            match = re.fullmatch(r"([1-9]\d*)(?:-([1-9]\d*))?", token)
+            if match is None:
+                return "--content-range must contain PDF pages or ascending ranges"
+            range_start = int(match.group(1))
+            range_end = int(match.group(2) or match.group(1))
+            pages = set(range(range_start, range_end + 1))
+            if range_start > range_end or selected_pages.intersection(pages):
+                return "--content-range must contain non-overlapping ascending PDF ranges"
+            selected_pages.update(pages)
+        if file_name is None and max(selected_pages) > args.generated_pages:
+            return "--content-range cannot exceed --generated-pages"
+        if args.expect_pages is not None and args.expect_pages != len(selected_pages):
+            return "--expect-pages must equal the number of pages in --content-range"
+    elif file_name is None and args.expect_pages is not None and args.expect_pages > args.generated_pages:
+        return "--expect-pages cannot exceed --generated-pages"
+    if (
+        file_name is not None
+        and Path(file_name).suffix.lower() != ".pdf"
+        and (
+            args.content_range is not None
+            or args.expect_pages is not None
+            or args.generated_pages != 1
+        )
+    ):
+        return "page range, count, and generation options require a PDF supplied file"
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    page_options_error = _validate_page_options(args, args.file)
+    if page_options_error is not None:
+        print(f"error: {page_options_error}", file=sys.stderr)
+        return 2
     api_base = args.api_base or os.environ.get("API_BASE_URL") or os.environ.get("API_URL")
     frontend_origin = (
         args.frontend_origin or os.environ.get("FRONTEND_ORIGIN") or os.environ.get("FRONTEND_URL")
@@ -308,7 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         content_type = _content_type_for(file_name)
         question = args.question or SAMPLE_QUESTION
     else:
-        pdf_bytes = make_sample_pdf(SAMPLE_LINES)
+        pdf_bytes = make_sample_pdf(SAMPLE_LINES, page_count=args.generated_pages)
         file_name = "smoke-sample.pdf"
         content_type = "application/pdf"
         question = args.question or SAMPLE_QUESTION
@@ -320,6 +396,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         content_type=content_type,
         question=question,
         expect_substring=args.expect,
+        content_range=args.content_range,
+        expected_page_count=args.expect_pages,
         skip_live_model=args.skip_live_model,
         ready_timeout=args.timeout,
         poll_interval=args.poll_interval,
